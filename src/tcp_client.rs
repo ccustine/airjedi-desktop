@@ -1,0 +1,62 @@
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::net::TcpStream;
+use tokio::time::{sleep, Duration};
+
+use crate::basestation::AircraftTracker;
+
+pub async fn connect_adsb_feed(tracker: Arc<Mutex<AircraftTracker>>) {
+    let address = "localhost:30003";
+
+    loop {
+        match connect_and_process(address, tracker.clone()).await {
+            Ok(_) => {
+                println!("ADSB connection closed normally");
+            }
+            Err(e) => {
+                eprintln!("ADSB connection error: {}", e);
+            }
+        }
+
+        println!("Reconnecting in 5 seconds...");
+        sleep(Duration::from_secs(5)).await;
+    }
+}
+
+const CLEANUP_INTERVAL_MESSAGES: u32 = 100;
+const AIRCRAFT_TIMEOUT_SECONDS: i64 = 180; // 3 minutes
+
+async fn connect_and_process(
+    address: &str,
+    tracker: Arc<Mutex<AircraftTracker>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Connecting to {}...", address);
+
+    let stream = TcpStream::connect(address).await?;
+    println!("Connected to BaseStation feed");
+
+    let reader = BufReader::new(stream);
+    let mut lines = reader.lines();
+    let mut cleanup_counter = 0;
+
+    while let Some(line) = lines.next_line().await? {
+        // Parse the BaseStation message - scope lock to drop before next await
+        {
+            let mut tracker_lock = tracker.lock()
+                .expect("Aircraft tracker mutex poisoned");
+            tracker_lock.parse_basestation_message(&line);
+        }
+
+        // Cleanup old aircraft every N messages
+        cleanup_counter += 1;
+        if cleanup_counter >= CLEANUP_INTERVAL_MESSAGES {
+            let mut tracker_lock = tracker.lock()
+                .expect("Aircraft tracker mutex poisoned");
+            tracker_lock.cleanup_old(AIRCRAFT_TIMEOUT_SECONDS);
+            cleanup_counter = 0;
+        }
+    }
+
+    println!("Connection closed by server");
+    Ok(())
+}
