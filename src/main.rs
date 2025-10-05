@@ -165,56 +165,48 @@ struct AdsbApp {
     map_zoom_level: f32, // Float for smoother pinch-zoom
     tile_manager: TileManager,
     tile_error: Option<String>,
+    selected_aircraft: Option<String>, // ICAO of selected aircraft
 }
 
 impl AdsbApp {
-    // Convert altitude to color gradient (in 10,000 ft increments)
-    // Low altitude (cyan) -> High altitude (purple)
+    // Convert altitude to continuous color gradient
+    // Low altitude (cyan) -> High altitude (purple) with smooth blending
     fn altitude_to_color(altitude_ft: Option<i32>) -> (u8, u8, u8) {
         let alt = altitude_ft.unwrap_or(0) as f32;
 
-        match alt as i32 {
-            a if a < 10000 => {
-                // 0-10k ft: Cyan/Teal
-                let t = (alt / 10000.0).clamp(0.0, 1.0);
-                (
-                    (0.0 + t * 50.0) as u8,
-                    (200.0 - t * 50.0) as u8,
-                    (200.0) as u8,
-                )
-            }
-            a if a < 20000 => {
-                // 10k-20k ft: Teal -> Green/Yellow
-                let t = ((alt - 10000.0) / 10000.0).clamp(0.0, 1.0);
-                (
-                    (50.0 + t * 100.0) as u8,
-                    (150.0 + t * 50.0) as u8,
-                    (200.0 - t * 200.0) as u8,
-                )
-            }
-            a if a < 30000 => {
-                // 20k-30k ft: Yellow -> Orange
-                let t = ((alt - 20000.0) / 10000.0).clamp(0.0, 1.0);
-                (
-                    (150.0 + t * 105.0) as u8,
-                    (200.0 - t * 50.0) as u8,
-                    (0.0) as u8,
-                )
-            }
-            a if a < 40000 => {
-                // 30k-40k ft: Orange -> Red/Magenta
-                let t = ((alt - 30000.0) / 10000.0).clamp(0.0, 1.0);
-                (
-                    255,
-                    (150.0 - t * 100.0) as u8,
-                    (0.0 + t * 150.0) as u8,
-                )
-            }
-            _ => {
-                // 40k+ ft: Purple/Magenta
-                (150, 50, 255)
+        // Clamp altitude to 0-45000 range for gradient calculation
+        let clamped_alt = alt.clamp(0.0, 45000.0);
+
+        // Define gradient stops with colors (in feet)
+        // Each stop is (altitude, (r, g, b))
+        let stops = [
+            (0.0, (0.0, 200.0, 200.0)),        // Cyan
+            (10000.0, (50.0, 150.0, 200.0)),   // Teal
+            (20000.0, (150.0, 200.0, 0.0)),    // Yellow
+            (30000.0, (255.0, 150.0, 0.0)),    // Orange
+            (40000.0, (255.0, 50.0, 150.0)),   // Red/Magenta
+            (45000.0, (150.0, 50.0, 255.0)),   // Purple
+        ];
+
+        // Find which two stops we're between
+        for i in 0..stops.len() - 1 {
+            let (alt1, color1) = stops[i];
+            let (alt2, color2) = stops[i + 1];
+
+            if clamped_alt >= alt1 && clamped_alt <= alt2 {
+                // Linear interpolation between the two colors
+                let t = (clamped_alt - alt1) / (alt2 - alt1);
+
+                let r = color1.0 + (color2.0 - color1.0) * t;
+                let g = color1.1 + (color2.1 - color1.1) * t;
+                let b = color1.2 + (color2.2 - color1.2) * t;
+
+                return (r as u8, g as u8, b as u8);
             }
         }
+
+        // Fallback to highest color if somehow we didn't match
+        (150, 50, 255)
     }
 
     fn new() -> Self {
@@ -249,10 +241,11 @@ impl AdsbApp {
             map_zoom_level: 8.0, // Zoom level 8 ≈ 150 mile range
             tile_manager: TileManager::new(),
             tile_error: None,
+            selected_aircraft: None,
         }
     }
 
-    fn draw_aircraft_list(&self, ui: &mut egui::Ui) {
+    fn draw_aircraft_list(&mut self, ui: &mut egui::Ui) {
         // Clone aircraft data with single lock to avoid holding lock during rendering
         let (count, aircraft_data): (usize, Vec<Aircraft>) = {
             let tracker = self.tracker.lock()
@@ -308,7 +301,18 @@ impl AdsbApp {
                         None => (egui::Color32::from_rgb(100, 100, 100), "─"),                       // Unknown - grey
                     };
 
-                    ui.group(|ui| {
+                    // Check if this aircraft is selected
+                    let is_selected = self.selected_aircraft.as_ref() == Some(&aircraft.icao);
+
+                    // Create a frame with background color if selected
+                    let frame = if is_selected {
+                        egui::Frame::group(ui.style())
+                            .fill(egui::Color32::from_rgba_unmultiplied(100, 140, 180, 220))
+                    } else {
+                        egui::Frame::group(ui.style())
+                    };
+
+                    let response = frame.show(ui, |ui| {
                         // Status line with ICAO and callsign
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(status_symbol)
@@ -322,8 +326,13 @@ impl AdsbApp {
                                 .strong());
 
                             if let Some(ref callsign) = aircraft.callsign {
+                                let callsign_color = if is_selected {
+                                    egui::Color32::from_rgb(255, 50, 50) // Bright red when selected
+                                } else {
+                                    egui::Color32::from_rgb(150, 220, 150) // Green when not selected
+                                };
                                 ui.label(egui::RichText::new(format!("│ {}", callsign.trim()))
-                                    .color(egui::Color32::from_rgb(150, 220, 150))
+                                    .color(callsign_color)
                                     .size(11.0)
                                     .strong());
                             }
@@ -377,6 +386,11 @@ impl AdsbApp {
                         });
                     });
 
+                    // Handle click to select this aircraft
+                    if response.response.clicked() {
+                        self.selected_aircraft = Some(aircraft.icao.clone());
+                    }
+
                     ui.add_space(3.0);
                 }
             });
@@ -387,7 +401,7 @@ impl AdsbApp {
         // Allocate space for the map
         let (response, painter) = ui.allocate_painter(
             egui::vec2(ui.available_width(), ui.available_height()),
-            egui::Sense::drag(),
+            egui::Sense::click_and_drag(),
         );
 
         let rect = response.rect;
@@ -567,7 +581,7 @@ impl AdsbApp {
                 // Only draw if within visible area
                 if rect.contains(pos) {
                     // Draw aircraft as a circle
-                    let color = egui::Color32::RED;
+                    let color = egui::Color32::from_rgb(120, 220, 120); // Light green shade
                     painter.circle_filled(pos, 5.0, color);
 
                     // Draw heading indicator
@@ -579,29 +593,86 @@ impl AdsbApp {
                         painter.line_segment([pos, end_pos], egui::Stroke::new(2.0, color));
                     }
 
-                    // Draw callsign label
+                    // Draw callsign and altitude labels to the right of the aircraft icon
+                    let mut label_offset_y = -10.0; // Start slightly above the icon
+
+                    // Draw callsign first (top)
                     if let Some(ref callsign) = aircraft.callsign {
-                        let text_pos = pos + egui::vec2(8.0, -8.0);
+                        let text = callsign.trim();
+                        let text_pos = pos + egui::vec2(10.0, label_offset_y);
+
+                        // Create a text galley to measure the text size
+                        let galley = painter.layout_no_wrap(
+                            text.to_string(),
+                            egui::FontId::proportional(11.0),
+                            egui::Color32::WHITE,
+                        );
+
+                        // Draw background box
+                        let padding = egui::vec2(3.0, 2.0);
+                        let box_rect = egui::Rect::from_min_size(
+                            text_pos - egui::vec2(padding.x, galley.size().y / 2.0 + padding.y),
+                            galley.size() + padding * 2.0,
+                        );
+                        painter.rect_filled(
+                            box_rect,
+                            2.0,
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+                        );
+
+                        // Draw text
                         painter.text(
                             text_pos,
-                            egui::Align2::LEFT_BOTTOM,
-                            callsign,
+                            egui::Align2::LEFT_CENTER,
+                            text,
+                            egui::FontId::proportional(11.0),
+                            egui::Color32::WHITE,
+                        );
+                        label_offset_y += 14.0; // Move down for next label
+                    }
+
+                    // Draw altitude below callsign
+                    if let Some(alt) = aircraft.altitude {
+                        let alt_text = format!("{}ft", alt);
+                        let text_pos = pos + egui::vec2(10.0, label_offset_y);
+
+                        // Create a text galley to measure the text size
+                        let galley = painter.layout_no_wrap(
+                            alt_text.clone(),
                             egui::FontId::proportional(10.0),
-                            egui::Color32::BLACK,
+                            egui::Color32::from_rgb(200, 200, 200),
+                        );
+
+                        // Draw background box
+                        let padding = egui::vec2(3.0, 2.0);
+                        let box_rect = egui::Rect::from_min_size(
+                            text_pos - egui::vec2(padding.x, galley.size().y / 2.0 + padding.y),
+                            galley.size() + padding * 2.0,
+                        );
+                        painter.rect_filled(
+                            box_rect,
+                            2.0,
+                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+                        );
+
+                        // Draw text
+                        painter.text(
+                            text_pos,
+                            egui::Align2::LEFT_CENTER,
+                            &alt_text,
+                            egui::FontId::proportional(10.0),
+                            egui::Color32::from_rgb(200, 200, 200),
                         );
                     }
 
-                    // Draw altitude if available
-                    if let Some(alt) = aircraft.altitude {
-                        let alt_text = format!("{}ft", alt);
-                        let alt_pos = pos + egui::vec2(8.0, 2.0);
-                        painter.text(
-                            alt_pos,
-                            egui::Align2::LEFT_TOP,
-                            &alt_text,
-                            egui::FontId::proportional(9.0),
-                            egui::Color32::DARK_GRAY,
-                        );
+                    // Check if this aircraft icon was clicked
+                    if response.clicked() {
+                        if let Some(click_pos) = response.interact_pointer_pos() {
+                            let distance = ((click_pos.x - pos.x).powi(2) + (click_pos.y - pos.y).powi(2)).sqrt();
+                            if distance <= 10.0 { // Click radius slightly larger than icon
+                                self.selected_aircraft = Some(aircraft.icao.clone());
+                            }
+                        }
                     }
                 }
             }
