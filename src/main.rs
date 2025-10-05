@@ -20,8 +20,85 @@ struct GeoLocation {
     longitude: Option<f64>,
 }
 
+#[cfg(target_os = "macos")]
+fn get_gps_location() -> Option<(f64, f64)> {
+    use cocoa::base::{id, nil};
+    use objc::runtime::Class;
+    use objc::{msg_send, sel, sel_impl};
+    use std::time::Duration;
+
+    println!("Attempting to get GPS location from CoreLocation...");
+
+    unsafe {
+        // Get CLLocationManager class
+        let cls = Class::get("CLLocationManager")?;
+        let manager: id = msg_send![cls, new];
+
+        if manager == nil {
+            println!("Failed to create CLLocationManager");
+            return None;
+        }
+
+        // Check authorization status
+        let auth_status: i32 = msg_send![cls, authorizationStatus];
+
+        // Request authorization if needed (0 = not determined)
+        if auth_status == 0 {
+            println!("Requesting location authorization...");
+            let _: () = msg_send![manager, requestWhenInUseAuthorization];
+            // Give it a moment to process
+            std::thread::sleep(Duration::from_millis(500));
+        }
+
+        // Start updating location
+        let _: () = msg_send![manager, startUpdatingLocation];
+
+        // Wait a bit for location update
+        std::thread::sleep(Duration::from_secs(2));
+
+        // Get location
+        let location: id = msg_send![manager, location];
+
+        if location != nil {
+            // CLLocationCoordinate2D is a struct with latitude and longitude
+            #[repr(C)]
+            struct CLLocationCoordinate2D {
+                latitude: f64,
+                longitude: f64,
+            }
+
+            let coord: CLLocationCoordinate2D = msg_send![location, coordinate];
+
+            let _: () = msg_send![manager, stopUpdatingLocation];
+            let _: () = msg_send![manager, release];
+
+            println!("GPS location found: {}, {}", coord.latitude, coord.longitude);
+            return Some((coord.latitude, coord.longitude));
+        } else {
+            println!("No location available from GPS");
+        }
+
+        let _: () = msg_send![manager, stopUpdatingLocation];
+        let _: () = msg_send![manager, release];
+    }
+
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get_gps_location() -> Option<(f64, f64)> {
+    None
+}
+
 fn get_current_location() -> Option<(f64, f64)> {
-    println!("Fetching current GPS location...");
+    println!("Fetching current location...");
+
+    // Try GPS first (macOS only)
+    if let Some(location) = get_gps_location() {
+        return Some(location);
+    }
+
+    println!("Falling back to IP-based geolocation...");
 
     // Try ipapi.co first
     if let Ok(response) = reqwest::blocking::get("https://ipapi.co/json/") {
@@ -83,6 +160,8 @@ struct AdsbApp {
     tracker: Arc<Mutex<AircraftTracker>>,
     map_center_lat: f64,
     map_center_lon: f64,
+    receiver_lat: f64,
+    receiver_lon: f64,
     map_zoom_level: f32, // Float for smoother pinch-zoom
     tile_manager: TileManager,
     tile_error: Option<String>,
@@ -165,6 +244,8 @@ impl AdsbApp {
             tracker,
             map_center_lat: lat,
             map_center_lon: lon,
+            receiver_lat: lat,
+            receiver_lon: lon,
             map_zoom_level: 8.0, // Zoom level 8 ≈ 150 mile range
             tile_manager: TileManager::new(),
             tile_error: None,
@@ -303,20 +384,6 @@ impl AdsbApp {
     }
 
     fn draw_map(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Aircraft Map");
-        ui.label(format!("Centered at: {:.4}, {:.4}", self.map_center_lat, self.map_center_lon));
-
-        ui.horizontal(|ui| {
-            ui.label("Zoom Level:");
-            if ui.add(egui::Slider::new(&mut self.map_zoom_level, 6.0..=12.0).step_by(0.1)).changed() {
-                // Clamp to valid range
-                self.map_zoom_level = self.map_zoom_level.clamp(6.0, 12.0);
-            }
-            ui.label(format!("({:.1})", self.map_zoom_level));
-        });
-
-        ui.separator();
-
         // Allocate space for the map
         let (response, painter) = ui.allocate_painter(
             egui::vec2(ui.available_width(), ui.available_height()),
@@ -421,20 +488,6 @@ impl AdsbApp {
                 center.y + pixel_y as f32,
             )
         };
-
-        // Draw center reference
-        painter.circle_stroke(
-            center,
-            10.0,
-            egui::Stroke::new(2.0, egui::Color32::BLUE),
-        );
-        painter.text(
-            center + egui::vec2(0.0, 15.0),
-            egui::Align2::CENTER_TOP,
-            "Map Center",
-            egui::FontId::proportional(12.0),
-            egui::Color32::BLUE,
-        );
 
         // Draw aircraft - clone data to release lock quickly
         let aircraft_list: Vec<Aircraft> = {
@@ -554,11 +607,49 @@ impl AdsbApp {
             }
         }
 
+        // Draw receiver location marker
+        let receiver_pos = to_screen(self.receiver_lat, self.receiver_lon);
+        if rect.contains(receiver_pos) {
+            // Draw a green circle for the receiver
+            painter.circle_filled(receiver_pos, 8.0, egui::Color32::from_rgb(50, 255, 50));
+            painter.circle_stroke(
+                receiver_pos,
+                8.0,
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 180, 0)),
+            );
+
+            // Draw crosshair
+            let crosshair_size = 12.0;
+            painter.line_segment(
+                [
+                    receiver_pos + egui::vec2(-crosshair_size, 0.0),
+                    receiver_pos + egui::vec2(crosshair_size, 0.0),
+                ],
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 180, 0)),
+            );
+            painter.line_segment(
+                [
+                    receiver_pos + egui::vec2(0.0, -crosshair_size),
+                    receiver_pos + egui::vec2(0.0, crosshair_size),
+                ],
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 180, 0)),
+            );
+
+            // Draw label
+            painter.text(
+                receiver_pos + egui::vec2(0.0, -20.0),
+                egui::Align2::CENTER_BOTTOM,
+                "Receiver",
+                egui::FontId::proportional(11.0),
+                egui::Color32::from_rgb(0, 180, 0),
+            );
+        }
+
         // Instructions
         painter.text(
             rect.left_top() + egui::vec2(10.0, 10.0),
             egui::Align2::LEFT_TOP,
-            "Drag to pan | Adjust zoom slider",
+            "Drag to pan | Pinch to zoom",
             egui::FontId::proportional(12.0),
             egui::Color32::BLACK,
         );
