@@ -1,3 +1,17 @@
+// Copyright 2025 Chris Custine
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 mod basestation;
 mod tcp_client;
 mod tiles;
@@ -9,9 +23,9 @@ use serde::Deserialize;
 use tiles::{TileManager, WebMercator};
 
 // Trail display constants
-const TRAIL_MAX_AGE_SECONDS: f32 = 900.0;  // 15 minutes total
-const TRAIL_SOLID_DURATION_SECONDS: f32 = 450.0;  // First 7.5 minutes solid
-const TRAIL_FADE_DURATION_SECONDS: f32 = 450.0;  // Last 7.5 minutes fade
+const TRAIL_MAX_AGE_SECONDS: f32 = 600.0;  // 10 minutes total
+const TRAIL_SOLID_DURATION_SECONDS: f32 = 450.0;  // First 75% solid (7.5 minutes)
+const TRAIL_FADE_DURATION_SECONDS: f32 = 150.0;  // Last 25% fade (2.5 minutes)
 
 #[derive(Deserialize, Debug)]
 #[allow(dead_code)]
@@ -166,6 +180,7 @@ struct AdsbApp {
     tile_manager: TileManager,
     tile_error: Option<String>,
     selected_aircraft: Option<String>, // ICAO of selected aircraft
+    previous_selected_aircraft: Option<String>, // Track selection changes for auto-scroll
 }
 
 impl AdsbApp {
@@ -242,6 +257,7 @@ impl AdsbApp {
             tile_manager: TileManager::new(),
             tile_error: None,
             selected_aircraft: None,
+            previous_selected_aircraft: None,
         }
     }
 
@@ -396,6 +412,11 @@ impl AdsbApp {
                     // Handle click to select this aircraft
                     if response.clicked() {
                         self.selected_aircraft = Some(aircraft.icao.clone());
+                    }
+
+                    // Auto-scroll to selected aircraft if it's a new selection
+                    if is_selected && self.previous_selected_aircraft.as_ref() != Some(&aircraft.icao) {
+                        response.scroll_to_me(Some(egui::Align::Center));
                     }
 
                     ui.add_space(3.0);
@@ -872,5 +893,8 @@ impl eframe::App for AdsbApp {
 
                 self.draw_aircraft_list(ui);
             });
+
+        // Update previous selection for next frame
+        self.previous_selected_aircraft = self.selected_aircraft.clone();
     }
 }
