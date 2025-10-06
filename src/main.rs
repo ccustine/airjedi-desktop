@@ -307,12 +307,12 @@ impl AdsbApp {
                     // Create a frame with background color if selected
                     let frame = if is_selected {
                         egui::Frame::group(ui.style())
-                            .fill(egui::Color32::from_rgba_unmultiplied(100, 140, 180, 220))
+                            .fill(egui::Color32::from_rgba_unmultiplied(100, 140, 180, 26)) // 10% opaque
                     } else {
                         egui::Frame::group(ui.style())
                     };
 
-                    let response = frame.show(ui, |ui| {
+                    let inner_response = frame.show(ui, |ui| {
                         // Status line with ICAO and callsign
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(status_symbol)
@@ -386,8 +386,15 @@ impl AdsbApp {
                         });
                     });
 
+                    // Make the entire frame area clickable
+                    let response = ui.interact(
+                        inner_response.response.rect,
+                        ui.id().with(&aircraft.icao),
+                        egui::Sense::click()
+                    );
+
                     // Handle click to select this aircraft
-                    if response.response.clicked() {
+                    if response.clicked() {
                         self.selected_aircraft = Some(aircraft.icao.clone());
                     }
 
@@ -580,9 +587,26 @@ impl AdsbApp {
 
                 // Only draw if within visible area
                 if rect.contains(pos) {
-                    // Draw aircraft as a circle
-                    let color = egui::Color32::from_rgb(120, 220, 120); // Light green shade
-                    painter.circle_filled(pos, 5.0, color);
+                    // Check if this aircraft is selected
+                    let is_selected = self.selected_aircraft.as_ref() == Some(&aircraft.icao);
+
+                    // Draw aircraft as a circle with selection feedback
+                    let (color, radius) = if is_selected {
+                        (egui::Color32::from_rgb(255, 100, 100), 7.0) // Larger red circle when selected
+                    } else {
+                        (egui::Color32::from_rgb(120, 220, 120), 5.0) // Normal green
+                    };
+
+                    painter.circle_filled(pos, radius, color);
+
+                    // Add selection ring
+                    if is_selected {
+                        painter.circle_stroke(
+                            pos,
+                            radius + 3.0,
+                            egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 50)),
+                        );
+                    }
 
                     // Draw heading indicator
                     if let Some(track) = aircraft.track {
@@ -664,17 +688,32 @@ impl AdsbApp {
                             egui::Color32::from_rgb(200, 200, 200),
                         );
                     }
+                }
+            }
+        }
 
-                    // Check if this aircraft icon was clicked
-                    if response.clicked() {
-                        if let Some(click_pos) = response.interact_pointer_pos() {
+        // Handle map clicks for aircraft selection/deselection
+        if response.clicked() {
+            if let Some(click_pos) = response.interact_pointer_pos() {
+                let mut clicked_aircraft: Option<String> = None;
+
+                // Check all aircraft to see if any were clicked
+                for aircraft in aircraft_list.iter() {
+                    if let (Some(lat), Some(lon)) = (aircraft.latitude, aircraft.longitude) {
+                        let pos = to_screen(lat, lon);
+                        if rect.contains(pos) {
                             let distance = ((click_pos.x - pos.x).powi(2) + (click_pos.y - pos.y).powi(2)).sqrt();
-                            if distance <= 10.0 { // Click radius slightly larger than icon
-                                self.selected_aircraft = Some(aircraft.icao.clone());
+                            let click_radius = if self.selected_aircraft.as_ref() == Some(&aircraft.icao) { 10.0 } else { 8.0 };
+                            if distance <= click_radius {
+                                clicked_aircraft = Some(aircraft.icao.clone());
+                                break; // Found a clicked aircraft, stop searching
                             }
                         }
                     }
                 }
+
+                // Update selection: select clicked aircraft or deselect if empty space clicked
+                self.selected_aircraft = clicked_aircraft;
             }
         }
 
