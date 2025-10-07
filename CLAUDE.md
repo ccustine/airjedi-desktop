@@ -123,6 +123,7 @@ Generic, extensible popup system for map items:
 - **`HoveredMapItem` enum**: Holds currently hovered item (Airport, Navaid, Aircraft)
 - **Hover detection**: Proximity-based detection with 8-10px margin around each item
 - **Popup rendering**: Uses `egui::Area` with `Order::Tooltip` for proper layering
+- **Aircraft hover behavior**: Hovering over an aircraft also selects it in the contact list and auto-scrolls the list to center the selection
 - **Colorful displays**:
   - **Airport popups**: ICAO (color by size), name, type badge, elevation, scheduled service indicator, coordinates
   - **Navaid popups**: Ident (color by type), name, type badge, frequency, coordinates

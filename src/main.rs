@@ -1299,6 +1299,8 @@ impl AdsbApp {
                         let hover_radius = radius + 10.0; // Add margin for easier hovering
                         if distance <= hover_radius {
                             self.hovered_map_item = Some(HoveredMapItem::Aircraft(aircraft.clone()));
+                            // Also select the aircraft and trigger auto-scroll in the list
+                            self.selected_aircraft = Some(aircraft.icao.clone());
                         }
                     }
                 }
