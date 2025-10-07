@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod aviation_data;
 mod basestation;
 mod tcp_client;
 mod tiles;
 
+use aviation_data::AviationData;
 use basestation::{Aircraft, AircraftTracker};
 use eframe::egui;
 use std::sync::{Arc, Mutex};
@@ -181,6 +183,19 @@ struct AdsbApp {
     tile_error: Option<String>,
     selected_aircraft: Option<String>, // ICAO of selected aircraft
     previous_selected_aircraft: Option<String>, // Track selection changes for auto-scroll
+    aviation_data: Arc<Mutex<AviationData>>,
+    aviation_data_loading: Arc<Mutex<bool>>,
+    show_airports: bool,
+    show_runways: bool,
+    show_navaids: bool,
+    airport_filter: AirportFilter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AirportFilter {
+    All,              // Show all airplane airports (large, medium, small)
+    FrequentlyUsed,   // Show airports with scheduled service or large/medium
+    MajorOnly,        // Show only large airports
 }
 
 impl AdsbApp {
@@ -246,6 +261,31 @@ impl AdsbApp {
             rt.block_on(tcp_client::connect_adsb_feed(tracker_clone));
         });
 
+        // Load aviation data in background
+        println!("Starting aviation data download/load in background...");
+        let aviation_data = Arc::new(Mutex::new(AviationData::new()));
+        let aviation_data_loading = Arc::new(Mutex::new(true));
+
+        let aviation_data_clone = aviation_data.clone();
+        let loading_clone = aviation_data_loading.clone();
+
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                match AviationData::load_or_download("data".into()).await {
+                    Ok(data) => {
+                        println!("Aviation data loaded successfully");
+                        *aviation_data_clone.lock().unwrap() = data;
+                        *loading_clone.lock().unwrap() = false;
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to load aviation data: {}", e);
+                        *loading_clone.lock().unwrap() = false;
+                    }
+                }
+            });
+        });
+
         println!("App initialized successfully");
         Self {
             tracker,
@@ -258,6 +298,12 @@ impl AdsbApp {
             tile_error: None,
             selected_aircraft: None,
             previous_selected_aircraft: None,
+            aviation_data,
+            aviation_data_loading,
+            show_airports: true,
+            show_runways: true,
+            show_navaids: false, // Off by default since there are many navaids
+            airport_filter: AirportFilter::FrequentlyUsed, // Default to frequently used
         }
     }
 
@@ -530,6 +576,153 @@ impl AdsbApp {
                 center.y + pixel_y as f32,
             )
         };
+
+        // Calculate visible bounds for spatial filtering based on viewport size
+        // Calculate the bounds by converting viewport corners to lat/lon
+        let tile_pixel_size_f64 = tile_pixel_size as f64;
+        let scale = 2.0_f64.powf(tile_zoom_level as f64);
+
+        // Calculate how many degrees the viewport represents at this zoom level
+        let half_viewport_width = (rect.width() as f64) / 2.0;
+        let half_viewport_height = (rect.height() as f64) / 2.0;
+
+        // Degrees per pixel at current zoom (simplified, not accounting for Mercator distortion)
+        let degrees_per_pixel_lon = 360.0 / (tile_pixel_size_f64 * scale);
+        let degrees_per_pixel_lat = 180.0 / (tile_pixel_size_f64 * scale);
+
+        // Calculate bounds with some padding (1.5x viewport to handle edge cases)
+        let padding_multiplier = 1.5;
+        let lon_range = (half_viewport_width * degrees_per_pixel_lon) * padding_multiplier;
+        let lat_range = (half_viewport_height * degrees_per_pixel_lat) * padding_multiplier;
+
+        let min_lat = (self.map_center_lat - lat_range).max(-85.0);
+        let max_lat = (self.map_center_lat + lat_range).min(85.0);
+        let min_lon = self.map_center_lon - lon_range;
+        let max_lon = self.map_center_lon + lon_range;
+
+        // Draw aviation overlays (only if data is loaded)
+        if let Ok(aviation_data) = self.aviation_data.lock() {
+            // Runways (draw first, so they appear under airports)
+            if self.show_runways && self.map_zoom_level >= 8.0 {
+                let visible_airports = aviation_data.get_airports_in_bounds(min_lat, max_lat, min_lon, max_lon);
+                for airport in visible_airports {
+                    let runways = aviation_data.get_runways_for_airport(&airport.icao);
+                    for runway in runways {
+                        if let (Some(le_lat), Some(le_lon), Some(he_lat), Some(he_lon)) =
+                            (runway.le_latitude, runway.le_longitude, runway.he_latitude, runway.he_longitude)
+                        {
+                            let le_pos = to_screen(le_lat, le_lon);
+                            let he_pos = to_screen(he_lat, he_lon);
+
+                            // Only draw if at least one endpoint is visible
+                            if rect.contains(le_pos) || rect.contains(he_pos) {
+                                let runway_color = egui::Color32::from_rgb(80, 80, 100);
+                                painter.line_segment(
+                                    [le_pos, he_pos],
+                                    egui::Stroke::new(runway.stroke_width(), runway_color)
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Airports
+            if self.show_airports {
+                let visible_airports = aviation_data.get_airports_in_bounds(min_lat, max_lat, min_lon, max_lon);
+                for airport in visible_airports {
+                    // Apply airport filter
+                    let should_show = match self.airport_filter {
+                        AirportFilter::All => {
+                            // Show all airplane airports, but filter small ones by zoom
+                            airport.is_public_airplane_airport() &&
+                            (airport.is_major() || airport.is_medium() || self.map_zoom_level >= 9.0)
+                        }
+                        AirportFilter::FrequentlyUsed => {
+                            // Show frequently used airports (scheduled service or large/medium)
+                            airport.is_frequently_used()
+                        }
+                        AirportFilter::MajorOnly => {
+                            // Show only large airports
+                            airport.is_major()
+                        }
+                    };
+
+                    if !should_show {
+                        continue;
+                    }
+
+                    let pos = to_screen(airport.latitude, airport.longitude);
+
+                    // Only draw if within visible area
+                    if rect.contains(pos) {
+                        let airport_color = if airport.is_major() {
+                            egui::Color32::from_rgb(200, 100, 100) // Red for large airports
+                        } else if airport.is_medium() {
+                            egui::Color32::from_rgb(150, 150, 100) // Yellow for medium
+                        } else {
+                            egui::Color32::from_rgb(120, 120, 120) // Gray for small
+                        };
+
+                        painter.circle_filled(pos, airport.render_radius(), airport_color);
+                        painter.circle_stroke(
+                            pos,
+                            airport.render_radius(),
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 255, 255)),
+                        );
+
+                        // Draw airport ICAO label at higher zoom levels
+                        if self.map_zoom_level >= 8.0 {
+                            painter.text(
+                                pos + egui::vec2(0.0, -12.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                &airport.icao,
+                                egui::FontId::proportional(9.0),
+                                egui::Color32::from_rgb(220, 220, 220),
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Navaids
+            if self.show_navaids && self.map_zoom_level >= 8.0 {
+                let visible_navaids = aviation_data.get_navaids_in_bounds(min_lat, max_lat, min_lon, max_lon);
+                for navaid in visible_navaids {
+                    let pos = to_screen(navaid.latitude, navaid.longitude);
+
+                    // Only draw if within visible area
+                    if rect.contains(pos) {
+                        let (r, g, b) = navaid.get_color();
+                        let navaid_color = egui::Color32::from_rgb(r, g, b);
+                        let size = navaid.symbol_size();
+
+                        // Draw as a triangle
+                        let points = vec![
+                            pos + egui::vec2(0.0, -size),
+                            pos + egui::vec2(size * 0.866, size * 0.5),
+                            pos + egui::vec2(-size * 0.866, size * 0.5),
+                        ];
+                        painter.add(egui::Shape::convex_polygon(
+                            points,
+                            navaid_color,
+                            egui::Stroke::new(1.0, egui::Color32::WHITE),
+                        ));
+
+                        // Draw navaid ident at higher zoom levels
+                        if self.map_zoom_level >= 9.0 {
+                            painter.text(
+                                pos + egui::vec2(0.0, size + 8.0),
+                                egui::Align2::CENTER_TOP,
+                                &navaid.ident,
+                                egui::FontId::proportional(8.0),
+                                navaid_color,
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // Draw aircraft - clone data to release lock quickly
         let aircraft_list: Vec<Aircraft> = {
@@ -892,6 +1085,78 @@ impl eframe::App for AdsbApp {
                 painter.add(egui::Shape::mesh(mesh));
 
                 self.draw_aircraft_list(ui);
+            });
+
+        // Overlay controls window (top-left)
+        egui::Window::new("Map Overlays")
+            .anchor(egui::Align2::LEFT_TOP, egui::vec2(10.0, 10.0))
+            .resizable(false)
+            .collapsible(true)
+            .default_open(false)
+            .show(ctx, |ui| {
+                // Check if data is still loading
+                let is_loading = *self.aviation_data_loading.lock().unwrap();
+
+                if is_loading {
+                    ui.label(egui::RichText::new("⏳ Loading aviation data...")
+                        .color(egui::Color32::from_rgb(255, 200, 100)));
+                    ui.label(egui::RichText::new("(Downloading if needed)")
+                        .color(egui::Color32::from_rgb(150, 150, 150))
+                        .size(9.0));
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label("Airports:");
+                        ui.checkbox(&mut self.show_airports, "");
+                    });
+
+                    // Airport filter options (indented)
+                    if self.show_airports {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("Airport Filter:")
+                            .size(10.0)
+                            .color(egui::Color32::from_rgb(180, 180, 180)));
+
+                        ui.horizontal(|ui| {
+                            ui.add_space(10.0);
+                            ui.radio_value(&mut self.airport_filter, AirportFilter::FrequentlyUsed, "Public/Frequent");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add_space(10.0);
+                            ui.radio_value(&mut self.airport_filter, AirportFilter::All, "All Airports");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add_space(10.0);
+                            ui.radio_value(&mut self.airport_filter, AirportFilter::MajorOnly, "Major Only");
+                        });
+                        ui.add_space(4.0);
+                    }
+
+                    ui.horizontal(|ui| {
+                        ui.label("Runways:");
+                        ui.checkbox(&mut self.show_runways, "");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Navaids:");
+                        ui.checkbox(&mut self.show_navaids, "");
+                    });
+                    ui.separator();
+
+                    // Get counts from locked data
+                    if let Ok(data) = self.aviation_data.lock() {
+                        let airports_count = data.airports.len();
+                        let runways_count = data.runways.len();
+                        let navaids_count = data.navaids.len();
+
+                        if airports_count > 0 || runways_count > 0 || navaids_count > 0 {
+                            ui.label(format!("Loaded: {} airports", airports_count));
+                            ui.label(format!("         {} runways", runways_count));
+                            ui.label(format!("         {} navaids", navaids_count));
+                        } else {
+                            ui.label(egui::RichText::new("No data loaded")
+                                .color(egui::Color32::from_rgb(150, 150, 150)));
+                        }
+                    }
+                }
             });
 
         // Update previous selection for next frame

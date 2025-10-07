@@ -37,7 +37,11 @@ The application will automatically:
 - Receiver location marker display
 - Aircraft visualization with altitude-colored trails
 - Map interaction (pan/pinch-zoom)
-- Constants: `TRAIL_MAX_AGE_SECONDS` (900s), `TRAIL_SOLID_DURATION_SECONDS` (450s)
+- Aviation overlay rendering (airports, runways, navaids)
+- Airport filtering UI with 3 modes (FrequentlyUsed, All, MajorOnly)
+- Background aviation data loading with progress indicator
+- Spatial bounding box calculation for viewport-based filtering
+- Constants: `TRAIL_MAX_AGE_SECONDS` (600s), `TRAIL_SOLID_DURATION_SECONDS` (450s)
 
 **src/basestation.rs** - Core aircraft tracking logic
 - `Aircraft` struct: Stores position, velocity, altitude, track, callsign, and position history
@@ -60,6 +64,16 @@ The application will automatically:
 - SHA256-based cache filenames
 - Subdomain load balancing (a-d.basemaps.cartocdn.com)
 - Async tile loading with texture management
+
+**src/aviation_data.rs** - Aviation overlay data
+- Airport, Runway, and Navaid struct definitions
+- CSV parser for OurAirports data format (serde-based)
+- Async download functionality (`load_or_download()`)
+- Automatic download from davidmegginson.github.io on first run
+- Spatial filtering with bounding box queries
+- Airport filtering methods: `is_frequently_used()`, `is_public_airplane_airport()`, `has_scheduled_service()`
+- Methods for zoom-based visibility control
+- Color-coding by airport size and navaid type
 
 ### Key Data Flow
 
@@ -103,6 +117,19 @@ Uses Web Mercator (EPSG:3857) for compatibility with standard web map tiles:
 - Receiver position stored separately from map center to allow panning
 
 ## Configuration Points
+
+### Aviation Data Overlays
+Aviation data is automatically downloaded from OurAirports on first startup to `./data/`:
+- `airports.csv` - Airport locations and metadata
+- `runways.csv` - Runway endpoints and surface types
+- `navaids.csv` - VOR, NDB, DME navigation aids
+
+Files are cached and reused on subsequent runs. To force re-download, delete the `./data/` directory.
+
+Airport filter modes:
+- `AirportFilter::FrequentlyUsed` - Default, shows airports with scheduled service
+- `AirportFilter::All` - All public airplane airports (excludes heliports)
+- `AirportFilter::MajorOnly` - Only large international airports
 
 ### TCP Connection
 Edit `src/tcp_client.rs:9`:

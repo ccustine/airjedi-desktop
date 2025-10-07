@@ -60,6 +60,30 @@ Trails smoothly fade from solid to transparent over time, giving you both altitu
 - List automatically scrolls to center selected aircraft
 - Subtle 10% opacity background highlight in list
 
+### 🛫 **Aviation Data Overlays**
+- **Airports** - Color-coded by size (large/medium/small)
+  - Red markers for major international airports
+  - Yellow for medium regional airports
+  - Gray for small local airports
+  - ICAO identifiers shown at higher zoom levels
+  - **Smart filtering** with 3 modes:
+    - **Public/Frequent** (default) - Shows airports with scheduled service and major hubs
+    - **All Airports** - Shows all public airplane airports
+    - **Major Only** - Shows only large international airports
+- **Runways** - Detailed runway visualization
+  - Paved runways shown with thicker lines
+  - Automatically displayed for visible airports
+  - Only shown at zoom level 8+
+- **Navaids** - Navigational aids overlay
+  - VOR/VORTAC in blue triangles
+  - NDB in orange triangles
+  - DME in purple triangles
+  - Ident labels at zoom 9+
+- **Automatic download** - Data files downloaded on first startup (no manual setup required)
+- **Smart zoom filtering** - Overlays automatically adjust visibility based on zoom level
+- **Toggle controls** - Show/hide each overlay type independently via Map Overlays window
+- Data from [OurAirports](https://ourairports.com/data/) (free, public domain)
+
 ---
 
 ## 🚀 Quick Start
@@ -83,11 +107,15 @@ cargo build --release
 cargo run --release
 ```
 
+**Note:** Aviation data files (airports, runways, navaids) will be automatically downloaded on first startup (~50MB). The app will display overlays once the data is loaded.
+
 The application will:
 1. 📍 Detect your GPS location (macOS: CoreLocation, others: IP geolocation)
 2. 🗺️ Center the map on your location
-3. 🔌 Connect to `localhost:30003` for ADS-B data
-4. ✈️ Start tracking aircraft within 400 miles
+3. 📥 Download aviation data in the background (if not already present)
+4. 🔌 Connect to `localhost:30003` for ADS-B data
+5. ✈️ Start tracking aircraft within 400 miles
+6. 🛫 Display airport/runway/navaid overlays once data loads
 
 ---
 
@@ -133,9 +161,15 @@ On macOS, the app uses CoreLocation for accurate GPS positioning. On first run, 
 airjedi-desktop/
 ├── src/
 │   ├── main.rs           # UI & rendering (egui framework)
+│   ├── aviation_data.rs  # Airport/runway/navaid data loader & renderer
 │   ├── basestation.rs    # ADS-B protocol parser & aircraft tracking
 │   ├── tcp_client.rs     # Async TCP client with auto-reconnect
 │   └── tiles.rs          # Map tile manager with Web Mercator projection
+├── data/
+│   ├── README.md         # Data download instructions
+│   ├── airports.csv      # (download separately)
+│   ├── runways.csv       # (download separately)
+│   └── navaids.csv       # (download separately)
 ├── assets/
 │   └── airjedi1.png      # Application screenshot
 ├── Cargo.toml            # Dependencies & build config
@@ -189,7 +223,9 @@ airjedi-desktop/
 | **Zoom** | Two-finger pinch (trackpad) or scroll wheel |
 | **Select aircraft** | Click icon on map or entry in list |
 | **Deselect** | Click empty map area |
-| **Collapse list** | Click window title bar |
+| **Toggle overlays** | Open "Map Overlays" window (top-left) |
+| **Filter airports** | Use radio buttons in Map Overlays window |
+| **Collapse panels** | Click window title bars |
 
 ---
 
@@ -233,11 +269,13 @@ Future enhancements being considered:
 - [ ] 💾 Export data to KML/GeoJSON formats
 - [ ] 📡 Multiple simultaneous data source support
 - [ ] 🌦️ Weather radar overlay integration
-- [ ] 🛫 Airport & waypoint markers
+- [x] 🛫 Airport, runway, & navaid overlays ✅
 - [ ] 🎨 Custom color schemes and themes
 - [ ] 📊 Historical playback and recording
 - [ ] 🔔 Aircraft alerts and notifications
 - [ ] 🌐 Web-based companion app
+- [ ] 🗺️ Airspace boundaries overlay (Class B, C, D)
+- [ ] 🛬 Airport frequencies and ATIS information
 
 ---
 
@@ -275,6 +313,7 @@ limitations under the License.
 
 - **OpenStreetMap Contributors** - Map data
 - **CARTO** - Beautiful basemap tiles
+- **OurAirports** - Aviation data (airports, runways, navaids)
 - **egui Community** - Excellent immediate mode GUI framework
 - **ADS-B Community** - Open aircraft tracking protocols
 
