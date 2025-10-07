@@ -189,6 +189,10 @@ struct AdsbApp {
     show_runways: bool,
     show_navaids: bool,
     airport_filter: AirportFilter,
+    // Cached bounding box for spatial filtering
+    cached_bounds: Option<(f64, f64, f64, f64)>, // (min_lat, max_lat, min_lon, max_lon)
+    last_bounds_zoom: f32,
+    last_bounds_center: (f64, f64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -304,6 +308,9 @@ impl AdsbApp {
             show_runways: true,
             show_navaids: false, // Off by default since there are many navaids
             airport_filter: AirportFilter::FrequentlyUsed, // Default to frequently used
+            cached_bounds: None,
+            last_bounds_zoom: 0.0,
+            last_bounds_center: (0.0, 0.0),
         }
     }
 
@@ -484,22 +491,65 @@ impl AdsbApp {
         // Draw background
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(200, 220, 240));
 
-        // Handle pinch-zoom gesture
-        let zoom_delta = ui.ctx().input(|i| i.zoom_delta());
-        if (zoom_delta - 1.0).abs() > 0.001 {
-            // Apply zoom delta (zoom_delta > 1.0 means zoom in, < 1.0 means zoom out)
-            let zoom_change = zoom_delta.log2();
-            self.map_zoom_level += zoom_change;
-            self.map_zoom_level = self.map_zoom_level.clamp(6.0, 12.0);
-        }
-
         // Calculate tile size in pixels at current zoom level
         let tile_pixel_size = 256.0;
 
-        // Round zoom level for tile fetching
+        // Handle pinch-zoom gesture with zoom-to-cursor
+        let zoom_delta = ui.ctx().input(|i| i.zoom_delta());
+        if (zoom_delta - 1.0).abs() > 0.001 {
+            // Get cursor position for zoom-to-cursor behavior
+            let cursor_pos = response.hover_pos().unwrap_or(center);
+
+            // Calculate cursor position in map coordinates before zoom
+            let old_zoom_level = self.map_zoom_level;
+            let old_tile_zoom = old_zoom_level.floor() as u8;
+            let old_scale = 2.0_f64.powf(old_tile_zoom as f64);
+
+            // Calculate cursor offset from center in pixels
+            let cursor_offset_x = (cursor_pos.x - center.x) as f64;
+            let cursor_offset_y = (cursor_pos.y - center.y) as f64;
+
+            // Convert to tile coordinates
+            let cursor_tile_offset_x = cursor_offset_x / tile_pixel_size as f64;
+            let cursor_tile_offset_y = cursor_offset_y / tile_pixel_size as f64;
+
+            // Get lat/lon at cursor position before zoom
+            let cursor_tile_x = WebMercator::lon_to_x(self.map_center_lon, old_tile_zoom) + cursor_tile_offset_x;
+            let cursor_tile_y = WebMercator::lat_to_y(self.map_center_lat, old_tile_zoom) + cursor_tile_offset_y;
+            let cursor_lat = tiles::WebMercator::tile_to_lat(cursor_tile_y, old_tile_zoom);
+            let cursor_lon = tiles::WebMercator::tile_to_lon(cursor_tile_x, old_tile_zoom);
+
+            // Apply zoom delta
+            let zoom_change = zoom_delta.log2();
+            self.map_zoom_level += zoom_change;
+            self.map_zoom_level = self.map_zoom_level.clamp(6.0, 12.0);
+
+            // Calculate new tile zoom level
+            let new_tile_zoom = self.map_zoom_level.floor() as u8;
+
+            // Calculate where cursor should be in new zoom level
+            let new_cursor_tile_x = WebMercator::lon_to_x(cursor_lon, new_tile_zoom);
+            let new_cursor_tile_y = WebMercator::lat_to_y(cursor_lat, new_tile_zoom);
+
+            // Adjust map center so cursor stays at same screen position
+            let new_center_tile_x = new_cursor_tile_x - cursor_tile_offset_x;
+            let new_center_tile_y = new_cursor_tile_y - cursor_tile_offset_y;
+
+            self.map_center_lat = tiles::WebMercator::tile_to_lat(new_center_tile_y, new_tile_zoom);
+            self.map_center_lon = tiles::WebMercator::tile_to_lon(new_center_tile_x, new_tile_zoom);
+
+            // Clamp latitude
+            self.map_center_lat = self.map_center_lat.clamp(-85.0, 85.0);
+        }
+
+        // Use round for tile fetching for balanced sharpness when zooming
         let tile_zoom_level = self.map_zoom_level.round() as u8;
 
-        // Render map tiles
+        // Calculate smooth scale factor for interpolation between zoom levels
+        let zoom_fraction = self.map_zoom_level - tile_zoom_level as f32;
+        let scale_factor = 2.0_f32.powf(zoom_fraction);
+
+        // Render map tiles with smooth scaling
         let visible_tiles = self.tile_manager.get_visible_tiles(
             self.map_center_lat,
             self.map_center_lon,
@@ -511,14 +561,19 @@ impl AdsbApp {
         let mut tiles_rendered = 0;
         for (tile_coord, offset_x, offset_y) in visible_tiles {
             if let Some(texture) = self.tile_manager.get_tile(tile_coord, ui.ctx()) {
+                // Apply scale factor to position and size for smooth zooming
+                let scaled_offset_x = offset_x * scale_factor;
+                let scaled_offset_y = offset_y * scale_factor;
+                let scaled_tile_size = tile_pixel_size * scale_factor;
+
                 let tile_pos = egui::pos2(
-                    center.x + offset_x,
-                    center.y + offset_y,
+                    center.x + scaled_offset_x,
+                    center.y + scaled_offset_y,
                 );
 
                 let tile_rect = egui::Rect::from_min_size(
                     tile_pos,
-                    egui::vec2(tile_pixel_size, tile_pixel_size),
+                    egui::vec2(scaled_tile_size, scaled_tile_size),
                 );
 
                 painter.image(
@@ -568,8 +623,9 @@ impl AdsbApp {
             let center_tile_x = WebMercator::lon_to_x(self.map_center_lon, tile_zoom_level);
             let center_tile_y = WebMercator::lat_to_y(self.map_center_lat, tile_zoom_level);
 
-            let pixel_x = (tile_x - center_tile_x) * tile_pixel_size as f64;
-            let pixel_y = (tile_y - center_tile_y) * tile_pixel_size as f64;
+            // Apply scale factor for smooth zoom
+            let pixel_x = (tile_x - center_tile_x) * tile_pixel_size as f64 * scale_factor as f64;
+            let pixel_y = (tile_y - center_tile_y) * tile_pixel_size as f64 * scale_factor as f64;
 
             egui::pos2(
                 center.x + pixel_x as f32,
@@ -577,60 +633,101 @@ impl AdsbApp {
             )
         };
 
-        // Calculate visible bounds for spatial filtering based on viewport size
-        // Calculate the bounds by converting viewport corners to lat/lon
-        let tile_pixel_size_f64 = tile_pixel_size as f64;
-        let scale = 2.0_f64.powf(tile_zoom_level as f64);
+        // Calculate visible bounds for spatial filtering with caching
+        let needs_recalc = self.cached_bounds.is_none()
+            || (self.map_zoom_level - self.last_bounds_zoom).abs() > 0.05
+            || (self.map_center_lat - self.last_bounds_center.0).abs() > 0.001
+            || (self.map_center_lon - self.last_bounds_center.1).abs() > 0.001;
 
-        // Calculate how many degrees the viewport represents at this zoom level
-        let half_viewport_width = (rect.width() as f64) / 2.0;
-        let half_viewport_height = (rect.height() as f64) / 2.0;
+        let (min_lat, max_lat, min_lon, max_lon) = if needs_recalc {
+            // Calculate the bounds by converting viewport corners to lat/lon
+            let tile_pixel_size_f64 = tile_pixel_size as f64;
+            let scale = 2.0_f64.powf(tile_zoom_level as f64);
 
-        // Degrees per pixel at current zoom (simplified, not accounting for Mercator distortion)
-        let degrees_per_pixel_lon = 360.0 / (tile_pixel_size_f64 * scale);
-        let degrees_per_pixel_lat = 180.0 / (tile_pixel_size_f64 * scale);
+            // Calculate how many degrees the viewport represents at this zoom level
+            let half_viewport_width = (rect.width() as f64) / 2.0;
+            let half_viewport_height = (rect.height() as f64) / 2.0;
 
-        // Calculate bounds with some padding (1.5x viewport to handle edge cases)
-        let padding_multiplier = 1.5;
-        let lon_range = (half_viewport_width * degrees_per_pixel_lon) * padding_multiplier;
-        let lat_range = (half_viewport_height * degrees_per_pixel_lat) * padding_multiplier;
+            // Degrees per pixel at current zoom (simplified, not accounting for Mercator distortion)
+            let degrees_per_pixel_lon = 360.0 / (tile_pixel_size_f64 * scale);
+            let degrees_per_pixel_lat = 180.0 / (tile_pixel_size_f64 * scale);
 
-        let min_lat = (self.map_center_lat - lat_range).max(-85.0);
-        let max_lat = (self.map_center_lat + lat_range).min(85.0);
-        let min_lon = self.map_center_lon - lon_range;
-        let max_lon = self.map_center_lon + lon_range;
+            // Calculate bounds with some padding (1.5x viewport to handle edge cases)
+            let padding_multiplier = 1.5;
+            let lon_range = (half_viewport_width * degrees_per_pixel_lon) * padding_multiplier;
+            let lat_range = (half_viewport_height * degrees_per_pixel_lat) * padding_multiplier;
 
-        // Draw aviation overlays (only if data is loaded)
-        if let Ok(aviation_data) = self.aviation_data.lock() {
-            // Runways (draw first, so they appear under airports)
-            if self.show_runways && self.map_zoom_level >= 8.0 {
-                let visible_airports = aviation_data.get_airports_in_bounds(min_lat, max_lat, min_lon, max_lon);
-                for airport in visible_airports {
-                    let runways = aviation_data.get_runways_for_airport(&airport.icao);
-                    for runway in runways {
-                        if let (Some(le_lat), Some(le_lon), Some(he_lat), Some(he_lon)) =
-                            (runway.le_latitude, runway.le_longitude, runway.he_latitude, runway.he_longitude)
-                        {
-                            let le_pos = to_screen(le_lat, le_lon);
-                            let he_pos = to_screen(he_lat, he_lon);
+            let min_lat = (self.map_center_lat - lat_range).max(-85.0);
+            let max_lat = (self.map_center_lat + lat_range).min(85.0);
+            let min_lon = self.map_center_lon - lon_range;
+            let max_lon = self.map_center_lon + lon_range;
 
-                            // Only draw if at least one endpoint is visible
-                            if rect.contains(le_pos) || rect.contains(he_pos) {
-                                let runway_color = egui::Color32::from_rgb(80, 80, 100);
-                                painter.line_segment(
-                                    [le_pos, he_pos],
-                                    egui::Stroke::new(runway.stroke_width(), runway_color)
-                                );
-                            }
+            // Cache the calculated bounds
+            self.cached_bounds = Some((min_lat, max_lat, min_lon, max_lon));
+            self.last_bounds_zoom = self.map_zoom_level;
+            self.last_bounds_center = (self.map_center_lat, self.map_center_lon);
+
+            (min_lat, max_lat, min_lon, max_lon)
+        } else {
+            // Use cached bounds
+            self.cached_bounds.unwrap()
+        };
+
+        // Clone aviation data early and release lock immediately
+        let (visible_airports, airport_runways, visible_navaids) = if let Ok(aviation_data) = self.aviation_data.lock() {
+            let airports: Vec<_> = aviation_data.get_airports_in_bounds(min_lat, max_lat, min_lon, max_lon)
+                .into_iter()
+                .cloned()
+                .collect();
+
+            // Get runways for all visible airports
+            let runways: Vec<(String, Vec<_>)> = airports.iter()
+                .map(|airport| {
+                    let airport_runways = aviation_data.get_runways_for_airport(&airport.icao)
+                        .into_iter()
+                        .cloned()
+                        .collect();
+                    (airport.icao.clone(), airport_runways)
+                })
+                .collect();
+
+            let navaids: Vec<_> = aviation_data.get_navaids_in_bounds(min_lat, max_lat, min_lon, max_lon)
+                .into_iter()
+                .cloned()
+                .collect();
+
+            (airports, runways, navaids)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        }; // Lock released here
+
+        // Draw aviation overlays (now using cloned data, no lock held)
+        // Runways (draw first, so they appear under airports)
+        if self.show_runways && self.map_zoom_level >= 8.0 {
+            for (airport_icao, runways) in &airport_runways {
+                for runway in runways {
+                    if let (Some(le_lat), Some(le_lon), Some(he_lat), Some(he_lon)) =
+                        (runway.le_latitude, runway.le_longitude, runway.he_latitude, runway.he_longitude)
+                    {
+                        let le_pos = to_screen(le_lat, le_lon);
+                        let he_pos = to_screen(he_lat, he_lon);
+
+                        // Only draw if at least one endpoint is visible
+                        if rect.contains(le_pos) || rect.contains(he_pos) {
+                            let runway_color = egui::Color32::from_rgb(80, 80, 100);
+                            painter.line_segment(
+                                [le_pos, he_pos],
+                                egui::Stroke::new(runway.stroke_width(), runway_color)
+                            );
                         }
                     }
                 }
             }
+        }
 
-            // Airports
-            if self.show_airports {
-                let visible_airports = aviation_data.get_airports_in_bounds(min_lat, max_lat, min_lon, max_lon);
-                for airport in visible_airports {
+        // Airports
+        if self.show_airports {
+            for airport in &visible_airports {
                     // Apply airport filter
                     let should_show = match self.airport_filter {
                         AirportFilter::All => {
@@ -682,13 +779,12 @@ impl AdsbApp {
                             );
                         }
                     }
-                }
             }
+        }
 
-            // Navaids
-            if self.show_navaids && self.map_zoom_level >= 8.0 {
-                let visible_navaids = aviation_data.get_navaids_in_bounds(min_lat, max_lat, min_lon, max_lon);
-                for navaid in visible_navaids {
+        // Navaids
+        if self.show_navaids && self.map_zoom_level >= 8.0 {
+            for navaid in &visible_navaids {
                     let pos = to_screen(navaid.latitude, navaid.longitude);
 
                     // Only draw if within visible area
@@ -720,7 +816,6 @@ impl AdsbApp {
                             );
                         }
                     }
-                }
             }
         }
 
@@ -1024,8 +1119,20 @@ impl AdsbApp {
 
 impl eframe::App for AdsbApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Request repaint periodically for real-time updates
-        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        // Request immediate repaint only when there's actual movement or interaction
+        // Check for pointer movement, velocity, or zoom changes
+        let needs_immediate_repaint = ctx.input(|i| {
+            i.pointer.is_moving()
+            || i.pointer.velocity().length() > 0.0
+            || i.zoom_delta() != 1.0
+            || i.pointer.any_pressed()  // Still need this for initial click response
+        });
+
+        if needs_immediate_repaint {
+            ctx.request_repaint(); // Immediate repaint during interaction
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500)); // Periodic updates when idle
+        }
 
         // Map takes full width
         egui::CentralPanel::default()
