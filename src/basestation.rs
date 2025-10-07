@@ -154,7 +154,7 @@ impl AircraftTracker {
 
         // Clean up old position history for all aircraft
         for aircraft in self.aircraft.values_mut() {
-            aircraft.cleanup_old_history(900); // Keep 15 minutes of history
+            aircraft.cleanup_old_history(300); // Keep 5 minutes of history
         }
 
         // Remove aircraft that haven't been seen recently

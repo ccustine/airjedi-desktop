@@ -25,9 +25,9 @@ use serde::Deserialize;
 use tiles::{TileManager, WebMercator};
 
 // Trail display constants
-const TRAIL_MAX_AGE_SECONDS: f32 = 600.0;  // 10 minutes total
-const TRAIL_SOLID_DURATION_SECONDS: f32 = 450.0;  // First 75% solid (7.5 minutes)
-const TRAIL_FADE_DURATION_SECONDS: f32 = 150.0;  // Last 25% fade (2.5 minutes)
+const TRAIL_MAX_AGE_SECONDS: f32 = 300.0;  // 5 minutes total
+const TRAIL_SOLID_DURATION_SECONDS: f32 = 270.0;  // First 4.5 minutes solid
+const TRAIL_FADE_DURATION_SECONDS: f32 = 30.0;  // Last 30 seconds fade
 
 #[derive(Deserialize, Debug)]
 #[allow(dead_code)]
