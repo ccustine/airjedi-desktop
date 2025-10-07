@@ -51,6 +51,13 @@ pub struct Aircraft {
     pub vertical_rate: Option<i32>,
     pub last_seen: DateTime<Utc>,
     pub position_history: Vec<PositionPoint>,
+    // Metadata fields
+    pub registration: Option<String>,
+    pub aircraft_type: Option<String>,
+    pub photo_url: Option<String>,
+    pub photo_thumbnail_url: Option<String>,
+    pub photographer: Option<String>,
+    pub metadata_fetched: bool,
 }
 
 impl Aircraft {
@@ -66,6 +73,12 @@ impl Aircraft {
             vertical_rate: None,
             last_seen: Utc::now(),
             position_history: Vec::new(),
+            registration: None,
+            aircraft_type: None,
+            photo_url: None,
+            photo_thumbnail_url: None,
+            photographer: None,
+            metadata_fetched: false,
         }
     }
 
@@ -147,6 +160,10 @@ impl AircraftTracker {
 
     pub fn get_aircraft(&self) -> Vec<&Aircraft> {
         self.aircraft.values().collect()
+    }
+
+    pub fn get_aircraft_mut(&mut self, icao: &str) -> Option<&mut Aircraft> {
+        self.aircraft.get_mut(icao)
     }
 
     pub fn cleanup_old(&mut self, max_age_seconds: i64) {

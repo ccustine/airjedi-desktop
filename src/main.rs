@@ -13,13 +13,19 @@
 // limitations under the License.
 
 mod aviation_data;
+mod aircraft_db;
+mod aircraft_metadata;
 mod basestation;
+mod photo_cache;
 mod tcp_client;
 mod tiles;
 
+use aircraft_db::AircraftDatabase;
+use aircraft_metadata::MetadataService;
 use aviation_data::{AviationData, Airport, Navaid};
 use basestation::{Aircraft, AircraftTracker};
 use eframe::egui;
+use photo_cache::PhotoTextureManager;
 use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use tiles::{TileManager, WebMercator};
@@ -466,6 +472,11 @@ struct AdsbApp {
     last_bounds_center: (f64, f64),
     // Hover popup state
     hovered_map_item: Option<HoveredMapItem>,
+    // Aircraft metadata
+    aircraft_db: Arc<Mutex<AircraftDatabase>>,
+    metadata_service: Arc<MetadataService>,
+    pending_metadata: Arc<Mutex<std::collections::HashSet<String>>>, // Track aircraft being fetched
+    photo_manager: PhotoTextureManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -563,6 +574,23 @@ impl AdsbApp {
             });
         });
 
+        // Load aircraft database in background
+        println!("Loading aircraft database...");
+        let aircraft_db = Arc::new(Mutex::new(AircraftDatabase::new()));
+        let aircraft_db_clone = aircraft_db.clone();
+
+        std::thread::spawn(move || {
+            if let Err(e) = aircraft_db_clone.lock().unwrap().load_or_download() {
+                eprintln!("Failed to load aircraft database: {}", e);
+            }
+        });
+
+        // Initialize metadata service
+        let metadata_service = Arc::new(MetadataService::new());
+
+        // Initialize photo manager
+        let photo_manager = PhotoTextureManager::new();
+
         println!("App initialized successfully");
         Self {
             tracker,
@@ -585,7 +613,65 @@ impl AdsbApp {
             last_bounds_zoom: 0.0,
             last_bounds_center: (0.0, 0.0),
             hovered_map_item: None,
+            aircraft_db,
+            metadata_service,
+            pending_metadata: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            photo_manager,
         }
+    }
+
+    /// Fetch metadata for an aircraft in the background
+    fn fetch_aircraft_metadata(&self, icao: String) {
+        // Check if already pending
+        {
+            let mut pending = self.pending_metadata.lock().unwrap();
+            if pending.contains(&icao) {
+                return; // Already fetching
+            }
+            pending.insert(icao.clone());
+        }
+
+        let aircraft_db = self.aircraft_db.clone();
+        let metadata_service = self.metadata_service.clone();
+        let tracker = self.tracker.clone();
+        let pending_metadata = self.pending_metadata.clone();
+
+        // Spawn background thread with its own tokio runtime
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                // First, lookup registration and aircraft type from database
+                let (registration, aircraft_type) = {
+                    let db = aircraft_db.lock().unwrap();
+                    (db.get_registration(&icao), db.get_aircraft_type(&icao))
+                };
+
+                // Fetch photo - try by registration first, then by ICAO
+                let photo_metadata = if let Some(ref reg) = registration {
+                    metadata_service.fetch_photo_by_registration(reg).await
+                } else {
+                    metadata_service.fetch_photo_by_icao(&icao).await
+                };
+
+                // Update aircraft with metadata
+                if let Ok(mut tracker) = tracker.lock() {
+                    if let Some(aircraft_map) = tracker.get_aircraft_mut(&icao) {
+                        aircraft_map.registration = registration;
+                        aircraft_map.aircraft_type = aircraft_type;
+                        aircraft_map.metadata_fetched = true;
+
+                        if let Some(metadata) = photo_metadata {
+                            aircraft_map.photo_url = metadata.photo_url;
+                            aircraft_map.photo_thumbnail_url = metadata.photo_thumbnail_url;
+                            aircraft_map.photographer = metadata.photographer;
+                        }
+                    }
+                }
+
+                // Remove from pending
+                pending_metadata.lock().unwrap().remove(&icao);
+            });
+        });
     }
 
     fn draw_aircraft_list(&mut self, ui: &mut egui::Ui) {
@@ -625,6 +711,11 @@ impl AdsbApp {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.push_id("aircraft_list", |ui| {
                 for aircraft in aircraft_list {
+                    // Trigger metadata fetch if not yet fetched
+                    if !aircraft.metadata_fetched {
+                        self.fetch_aircraft_metadata(aircraft.icao.clone());
+                    }
+
                     // Determine status color based on altitude and recency
                     let seconds_ago = (chrono::Utc::now() - aircraft.last_seen).num_seconds();
                     let (status_color, status_symbol) = if seconds_ago < 10 {
@@ -656,77 +747,116 @@ impl AdsbApp {
                     };
 
                     let inner_response = frame.show(ui, |ui| {
-                        // Status line with ICAO and callsign
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(status_symbol)
-                                .color(status_color)
-                                .size(12.0));
+                            // Photo thumbnail on the left
+                            let texture = if let Some(ref photo_url) = aircraft.photo_thumbnail_url {
+                                self.photo_manager.get_or_load_texture(ui.ctx(), photo_url, &aircraft.icao)
+                            } else {
+                                None
+                            };
 
-                            ui.label(egui::RichText::new(&aircraft.icao)
-                                .color(egui::Color32::from_rgb(200, 220, 255))
-                                .size(11.0)
-                                .monospace()
-                                .strong());
-
-                            if let Some(ref callsign) = aircraft.callsign {
-                                let callsign_color = if is_selected {
-                                    egui::Color32::from_rgb(255, 50, 50) // Bright red when selected
-                                } else {
-                                    egui::Color32::from_rgb(150, 220, 150) // Green when not selected
-                                };
-                                ui.label(egui::RichText::new(format!("│ {}", callsign.trim()))
-                                    .color(callsign_color)
-                                    .size(11.0)
-                                    .strong());
+                            if let Some(tex) = texture {
+                                ui.image((tex.id(), egui::vec2(48.0, 32.0)));
+                            } else if let Some(placeholder) = self.photo_manager.get_placeholder() {
+                                ui.image((placeholder.id(), egui::vec2(48.0, 32.0)));
+                            } else {
+                                // Fallback: empty space
+                                ui.add_space(48.0);
                             }
 
-                            // Altitude indicator on the right
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if let Some(alt) = aircraft.altitude {
-                                    ui.label(egui::RichText::new(format!("{} FL{:03}", alt_indicator, alt / 100))
-                                        .color(alt_color)
-                                        .size(10.0)
+                            ui.add_space(4.0);
+
+                            // Right side: all aircraft info
+                            ui.vertical(|ui| {
+                                // Status line with ICAO and callsign
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(status_symbol)
+                                        .color(status_color)
+                                        .size(12.0));
+
+                                    ui.label(egui::RichText::new(&aircraft.icao)
+                                        .color(egui::Color32::from_rgb(200, 220, 255))
+                                        .size(11.0)
+                                        .monospace()
+                                        .strong());
+
+                                    if let Some(ref callsign) = aircraft.callsign {
+                                        let callsign_color = if is_selected {
+                                            egui::Color32::from_rgb(255, 50, 50) // Bright red when selected
+                                        } else {
+                                            egui::Color32::from_rgb(150, 220, 150) // Green when not selected
+                                        };
+                                        ui.label(egui::RichText::new(format!("│ {}", callsign.trim()))
+                                            .color(callsign_color)
+                                            .size(11.0)
+                                            .strong());
+                                    }
+
+                                    // Altitude indicator on the right
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if let Some(alt) = aircraft.altitude {
+                                            ui.label(egui::RichText::new(format!("{} FL{:03}", alt_indicator, alt / 100))
+                                                .color(alt_color)
+                                                .size(10.0)
+                                                .monospace());
+                                        }
+                                    });
+                                });
+
+                                // Data grid - compact military style
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+
+                                    // Speed
+                                    if let Some(vel) = aircraft.velocity {
+                                        ui.label(egui::RichText::new(format!("SPD {:03}", vel as i32))
+                                            .color(egui::Color32::from_rgb(180, 180, 180))
+                                            .size(9.0)
+                                            .monospace());
+                                    }
+
+                                    // Track/Heading
+                                    if let Some(track) = aircraft.track {
+                                        ui.label(egui::RichText::new(format!("HDG {:03}°", track as i32))
+                                            .color(egui::Color32::from_rgb(180, 180, 180))
+                                            .size(9.0)
+                                            .monospace());
+                                    }
+                                });
+
+                                // Position coordinates - dim
+                                if let (Some(lat), Some(lon)) = (aircraft.latitude, aircraft.longitude) {
+                                    ui.label(egui::RichText::new(format!("{:>7.3}° {:>8.3}°", lat, lon))
+                                        .color(egui::Color32::from_rgb(120, 120, 120))
+                                        .size(8.5)
                                         .monospace());
                                 }
-                            });
-                        });
 
-                        // Data grid - compact military style
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 8.0;
+                                // Registration and Aircraft Type
+                                ui.horizontal(|ui| {
+                                    if let Some(ref registration) = aircraft.registration {
+                                        ui.label(egui::RichText::new(format!("REG: {}", registration))
+                                            .color(egui::Color32::from_rgb(150, 180, 200))
+                                            .size(8.5)
+                                            .monospace());
+                                    }
+                                    if let Some(ref aircraft_type) = aircraft.aircraft_type {
+                                        ui.label(egui::RichText::new(format!("TYPE: {}", aircraft_type))
+                                            .color(egui::Color32::from_rgb(180, 150, 200))
+                                            .size(8.5)
+                                            .monospace());
+                                    }
+                                });
 
-                            // Speed
-                            if let Some(vel) = aircraft.velocity {
-                                ui.label(egui::RichText::new(format!("SPD {:03}", vel as i32))
-                                    .color(egui::Color32::from_rgb(180, 180, 180))
-                                    .size(9.0)
-                                    .monospace());
-                            }
-
-                            // Track/Heading
-                            if let Some(track) = aircraft.track {
-                                ui.label(egui::RichText::new(format!("HDG {:03}°", track as i32))
-                                    .color(egui::Color32::from_rgb(180, 180, 180))
-                                    .size(9.0)
-                                    .monospace());
-                            }
-                        });
-
-                        // Position coordinates - dim
-                        if let (Some(lat), Some(lon)) = (aircraft.latitude, aircraft.longitude) {
-                            ui.label(egui::RichText::new(format!("{:>7.3}° {:>8.3}°", lat, lon))
-                                .color(egui::Color32::from_rgb(120, 120, 120))
-                                .size(8.5)
-                                .monospace());
-                        }
-
-                        // Last seen timestamp
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!("T-{:03}s", seconds_ago))
-                                .color(egui::Color32::from_rgb(100, 100, 100))
-                                .size(8.0)
-                                .monospace());
-                        });
+                                // Last seen timestamp
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(format!("T-{:03}s", seconds_ago))
+                                        .color(egui::Color32::from_rgb(100, 100, 100))
+                                        .size(8.0)
+                                        .monospace());
+                                });
+                            }); // Close vertical layout
+                        }); // Close horizontal layout with photo
                     });
 
                     // Make the entire frame area clickable
@@ -780,7 +910,6 @@ impl AdsbApp {
             // Calculate cursor position in map coordinates before zoom
             let old_zoom_level = self.map_zoom_level;
             let old_tile_zoom = old_zoom_level.floor() as u8;
-            let old_scale = 2.0_f64.powf(old_tile_zoom as f64);
 
             // Calculate cursor offset from center in pixels
             let cursor_offset_x = (cursor_pos.x - center.x) as f64;
@@ -981,7 +1110,7 @@ impl AdsbApp {
         // Draw aviation overlays (now using cloned data, no lock held)
         // Runways (draw first, so they appear under airports)
         if self.show_runways && self.map_zoom_level >= 8.0 {
-            for (airport_icao, runways) in &airport_runways {
+            for (_airport_icao, runways) in &airport_runways {
                 for runway in runways {
                     if let (Some(le_lat), Some(le_lon), Some(he_lat), Some(he_lon)) =
                         (runway.le_latitude, runway.le_longitude, runway.he_latitude, runway.he_longitude)
@@ -1447,6 +1576,11 @@ impl AdsbApp {
 
 impl eframe::App for AdsbApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Initialize placeholder texture on first frame
+        if self.photo_manager.get_placeholder().is_none() {
+            self.photo_manager.init_placeholder(ctx);
+        }
+
         // Request immediate repaint only when there's actual movement or interaction
         // Check for pointer movement, velocity, or zoom changes
         let needs_immediate_repaint = ctx.input(|i| {
@@ -1464,7 +1598,7 @@ impl eframe::App for AdsbApp {
 
         // Map takes full width
         egui::CentralPanel::default()
-            .frame(egui::Frame::none())
+            .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 self.draw_map(ui);
             });
@@ -1476,9 +1610,9 @@ impl eframe::App for AdsbApp {
             .fixed_size(egui::vec2(350.0, screen_height - 20.0))
             .resizable(false)
             .collapsible(true)
-            .frame(egui::Frame::none()
+            .frame(egui::Frame::NONE
                 .fill(egui::Color32::TRANSPARENT)
-                .rounding(egui::Rounding::same(8.0))
+                .corner_radius(8.0)
             )
             .show(ctx, |ui| {
                 // Draw gradient background for sheen effect
