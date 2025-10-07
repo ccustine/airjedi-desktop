@@ -177,11 +177,12 @@ trait MapItemPopup {
     fn render_popup(&self, ui: &mut egui::Ui);
 }
 
-// Enum to hold any hovered map item (extensible for future items like Aircraft)
+// Enum to hold any hovered map item (extensible for future items)
 #[derive(Clone)]
 enum HoveredMapItem {
     Airport(Airport),
     Navaid(Navaid),
+    Aircraft(Aircraft),
 }
 
 // Implement popup rendering for Airport
@@ -310,6 +311,134 @@ impl MapItemPopup for Navaid {
         // Coordinates (subtle)
         ui.label(egui::RichText::new(format!("{:.4}°, {:.4}°", self.latitude, self.longitude))
             .color(egui::Color32::from_rgb(120, 120, 120))
+            .size(8.0));
+    }
+}
+
+// Implement popup rendering for Aircraft
+impl MapItemPopup for Aircraft {
+    fn render_popup(&self, ui: &mut egui::Ui) {
+        ui.set_min_width(220.0);
+
+        // Callsign or ICAO as header
+        if let Some(ref callsign) = self.callsign {
+            ui.label(egui::RichText::new(callsign.trim())
+                .color(egui::Color32::from_rgb(100, 255, 100))
+                .size(16.0)
+                .strong());
+
+            // ICAO as subtitle
+            ui.label(egui::RichText::new(&self.icao)
+                .color(egui::Color32::from_rgb(180, 180, 180))
+                .size(10.0)
+                .monospace());
+        } else {
+            // Just ICAO if no callsign
+            ui.label(egui::RichText::new(&self.icao)
+                .color(egui::Color32::from_rgb(100, 255, 100))
+                .size(16.0)
+                .strong()
+                .monospace());
+        }
+
+        ui.add_space(4.0);
+
+        // Altitude with color coding
+        if let Some(alt) = self.altitude {
+            let (r, g, b) = AdsbApp::altitude_to_color(Some(alt));
+            let alt_color = egui::Color32::from_rgb(r, g, b);
+
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("▲")
+                    .color(alt_color)
+                    .size(10.0));
+                ui.label(egui::RichText::new(format!("{} ft  (FL{:03})", alt, alt / 100))
+                    .color(alt_color)
+                    .size(10.0)
+                    .monospace());
+            });
+        }
+
+        // Velocity/Speed
+        if let Some(vel) = self.velocity {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Speed:")
+                    .color(egui::Color32::from_rgb(150, 150, 150))
+                    .size(9.0));
+                ui.label(egui::RichText::new(format!("{} kts", vel as i32))
+                    .color(egui::Color32::from_rgb(200, 200, 200))
+                    .size(9.0)
+                    .monospace());
+            });
+        }
+
+        // Track/Heading
+        if let Some(track) = self.track {
+            let heading_indicator = match track as i32 {
+                0..=22 | 338..=360 => "N",
+                23..=67 => "NE",
+                68..=112 => "E",
+                113..=157 => "SE",
+                158..=202 => "S",
+                203..=247 => "SW",
+                248..=292 => "W",
+                293..=337 => "NW",
+                _ => "?",
+            };
+
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Heading:")
+                    .color(egui::Color32::from_rgb(150, 150, 150))
+                    .size(9.0));
+                ui.label(egui::RichText::new(format!("{:03}° {}", track as i32, heading_indicator))
+                    .color(egui::Color32::from_rgb(200, 200, 200))
+                    .size(9.0)
+                    .monospace());
+            });
+        }
+
+        // Vertical rate with climbing/descending indicator
+        if let Some(vr) = self.vertical_rate {
+            let (indicator, vr_color) = if vr > 100 {
+                ("↑", egui::Color32::from_rgb(100, 255, 100)) // Climbing - green
+            } else if vr < -100 {
+                ("↓", egui::Color32::from_rgb(255, 150, 100)) // Descending - orange
+            } else {
+                ("→", egui::Color32::from_rgb(150, 150, 150)) // Level - gray
+            };
+
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(indicator)
+                    .color(vr_color)
+                    .size(11.0));
+                ui.label(egui::RichText::new(format!("{:+} ft/min", vr))
+                    .color(vr_color)
+                    .size(9.0)
+                    .monospace());
+            });
+        }
+
+        ui.add_space(2.0);
+
+        // Position coordinates
+        if let (Some(lat), Some(lon)) = (self.latitude, self.longitude) {
+            ui.label(egui::RichText::new(format!("{:.4}°, {:.4}°", lat, lon))
+                .color(egui::Color32::from_rgb(120, 120, 120))
+                .size(8.0));
+        }
+
+        // Last seen
+        let seconds_ago = (chrono::Utc::now() - self.last_seen).num_seconds();
+        let time_color = if seconds_ago < 5 {
+            egui::Color32::from_rgb(100, 255, 100) // Recent - green
+        } else if seconds_ago < 30 {
+            egui::Color32::from_rgb(255, 200, 100) // Moderate - yellow
+        } else {
+            egui::Color32::from_rgb(150, 150, 150) // Old - gray
+        };
+
+        ui.label(egui::RichText::new(format!("Updated {}s ago", seconds_ago))
+            .color(time_color)
             .size(8.0));
     }
 }
@@ -1163,6 +1292,15 @@ impl AdsbApp {
                             egui::Color32::from_rgb(200, 200, 200),
                         );
                     }
+
+                    // Check for hover
+                    if let Some(hover_pos) = response.hover_pos() {
+                        let distance = hover_pos.distance(pos);
+                        let hover_radius = radius + 10.0; // Add margin for easier hovering
+                        if distance <= hover_radius {
+                            self.hovered_map_item = Some(HoveredMapItem::Aircraft(aircraft.clone()));
+                        }
+                    }
                 }
             }
         }
@@ -1296,6 +1434,7 @@ impl AdsbApp {
                                 match hovered_item {
                                     HoveredMapItem::Airport(airport) => airport.render_popup(ui),
                                     HoveredMapItem::Navaid(navaid) => navaid.render_popup(ui),
+                                    HoveredMapItem::Aircraft(aircraft) => aircraft.render_popup(ui),
                                 }
                             });
                     });

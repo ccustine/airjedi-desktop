@@ -120,13 +120,16 @@ Uses Web Mercator (EPSG:3857) for compatibility with standard web map tiles:
 ### Hover Popup System
 Generic, extensible popup system for map items:
 - **`MapItemPopup` trait**: Any type can implement `render_popup(&self, ui: &mut egui::Ui)`
-- **`HoveredMapItem` enum**: Holds currently hovered item (Airport, Navaid, or future types)
-- **Hover detection**: Proximity-based detection with 8px margin around each item
+- **`HoveredMapItem` enum**: Holds currently hovered item (Airport, Navaid, Aircraft)
+- **Hover detection**: Proximity-based detection with 8-10px margin around each item
 - **Popup rendering**: Uses `egui::Area` with `Order::Tooltip` for proper layering
-- **Colorful display**: Airport popups show ICAO, name, type, elevation, scheduled service; Navaid popups show ident, name, type, frequency
+- **Colorful displays**:
+  - **Airport popups**: ICAO (color by size), name, type badge, elevation, scheduled service indicator, coordinates
+  - **Navaid popups**: Ident (color by type), name, type badge, frequency, coordinates
+  - **Aircraft popups**: Callsign/ICAO, altitude (altitude-gradient color), speed, heading (with cardinal direction), vertical rate (climb/descend indicators), position, last update timestamp
 
 To add popups for new item types:
-1. Add variant to `HoveredMapItem` enum (e.g., `Aircraft(Aircraft)`)
+1. Add variant to `HoveredMapItem` enum
 2. Implement `MapItemPopup` trait for the type
 3. Add hover detection in rendering code
 4. Add match arm in popup rendering logic
