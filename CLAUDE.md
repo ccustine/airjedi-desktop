@@ -41,6 +41,7 @@ The application will automatically:
 - Airport filtering UI with 3 modes (FrequentlyUsed, All, MajorOnly)
 - Background aviation data loading with progress indicator
 - Spatial bounding box calculation for viewport-based filtering
+- Generic hover popup system with `MapItemPopup` trait (airports, navaids)
 - Constants: `TRAIL_MAX_AGE_SECONDS` (300s), `TRAIL_SOLID_DURATION_SECONDS` (225s), `TRAIL_FADE_DURATION_SECONDS` (75s)
 
 **src/basestation.rs** - Core aircraft tracking logic
@@ -115,6 +116,20 @@ Uses Web Mercator (EPSG:3857) for compatibility with standard web map tiles:
 - Requests location authorization and waits 2 seconds for GPS fix
 - Falls back to IP geolocation (ipapi.co, then ip-api.com)
 - Receiver position stored separately from map center to allow panning
+
+### Hover Popup System
+Generic, extensible popup system for map items:
+- **`MapItemPopup` trait**: Any type can implement `render_popup(&self, ui: &mut egui::Ui)`
+- **`HoveredMapItem` enum**: Holds currently hovered item (Airport, Navaid, or future types)
+- **Hover detection**: Proximity-based detection with 8px margin around each item
+- **Popup rendering**: Uses `egui::Area` with `Order::Tooltip` for proper layering
+- **Colorful display**: Airport popups show ICAO, name, type, elevation, scheduled service; Navaid popups show ident, name, type, frequency
+
+To add popups for new item types:
+1. Add variant to `HoveredMapItem` enum (e.g., `Aircraft(Aircraft)`)
+2. Implement `MapItemPopup` trait for the type
+3. Add hover detection in rendering code
+4. Add match arm in popup rendering logic
 
 ## Configuration Points
 

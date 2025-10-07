@@ -17,7 +17,7 @@ mod basestation;
 mod tcp_client;
 mod tiles;
 
-use aviation_data::AviationData;
+use aviation_data::{AviationData, Airport, Navaid};
 use basestation::{Aircraft, AircraftTracker};
 use eframe::egui;
 use std::sync::{Arc, Mutex};
@@ -172,6 +172,148 @@ fn main() -> Result<(), eframe::Error> {
     )
 }
 
+// Generic trait for map items that can show hover popups
+trait MapItemPopup {
+    fn render_popup(&self, ui: &mut egui::Ui);
+}
+
+// Enum to hold any hovered map item (extensible for future items like Aircraft)
+#[derive(Clone)]
+enum HoveredMapItem {
+    Airport(Airport),
+    Navaid(Navaid),
+}
+
+// Implement popup rendering for Airport
+impl MapItemPopup for Airport {
+    fn render_popup(&self, ui: &mut egui::Ui) {
+        ui.set_min_width(200.0);
+
+        // ICAO header with color based on airport type
+        let header_color = if self.is_major() {
+            egui::Color32::from_rgb(255, 120, 120) // Red for large
+        } else if self.is_medium() {
+            egui::Color32::from_rgb(255, 200, 100) // Orange for medium
+        } else {
+            egui::Color32::from_rgb(180, 180, 255) // Light blue for small
+        };
+
+        ui.label(egui::RichText::new(&self.icao)
+            .color(header_color)
+            .size(16.0)
+            .strong());
+
+        // Airport name
+        ui.label(egui::RichText::new(&self.name)
+            .color(egui::Color32::from_rgb(220, 220, 220))
+            .size(11.0));
+
+        ui.add_space(4.0);
+
+        // Type badge
+        let (type_text, type_color) = if self.is_major() {
+            ("Large Airport", egui::Color32::from_rgb(255, 100, 100))
+        } else if self.is_medium() {
+            ("Medium Airport", egui::Color32::from_rgb(255, 180, 80))
+        } else {
+            ("Small Airport", egui::Color32::from_rgb(150, 150, 200))
+        };
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("●")
+                .color(type_color)
+                .size(10.0));
+            ui.label(egui::RichText::new(type_text)
+                .color(type_color)
+                .size(10.0));
+        });
+
+        // Elevation
+        if let Some(elevation) = self.elevation {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Elevation:")
+                    .color(egui::Color32::from_rgb(150, 150, 150))
+                    .size(9.0));
+                ui.label(egui::RichText::new(format!("{} ft", elevation))
+                    .color(egui::Color32::from_rgb(200, 200, 200))
+                    .size(9.0));
+            });
+        }
+
+        // Scheduled service
+        if self.has_scheduled_service() {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("✈")
+                    .color(egui::Color32::from_rgb(100, 200, 100))
+                    .size(10.0));
+                ui.label(egui::RichText::new("Scheduled Service")
+                    .color(egui::Color32::from_rgb(100, 200, 100))
+                    .size(9.0));
+            });
+        }
+
+        ui.add_space(2.0);
+
+        // Coordinates (subtle)
+        ui.label(egui::RichText::new(format!("{:.4}°, {:.4}°", self.latitude, self.longitude))
+            .color(egui::Color32::from_rgb(120, 120, 120))
+            .size(8.0));
+    }
+}
+
+// Implement popup rendering for Navaid
+impl MapItemPopup for Navaid {
+    fn render_popup(&self, ui: &mut egui::Ui) {
+        ui.set_min_width(180.0);
+
+        // Ident header with color based on navaid type
+        let (r, g, b) = self.get_color();
+        let header_color = egui::Color32::from_rgb(r, g, b);
+
+        ui.label(egui::RichText::new(&self.ident)
+            .color(header_color)
+            .size(16.0)
+            .strong());
+
+        // Navaid name
+        ui.label(egui::RichText::new(&self.name)
+            .color(egui::Color32::from_rgb(220, 220, 220))
+            .size(11.0));
+
+        ui.add_space(4.0);
+
+        // Type badge
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("▲")
+                .color(header_color)
+                .size(10.0));
+            ui.label(egui::RichText::new(&self.navaid_type)
+                .color(header_color)
+                .size(10.0));
+        });
+
+        // Frequency
+        if let Some(freq_khz) = self.frequency_khz {
+            let freq_mhz = freq_khz as f32 / 1000.0;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Frequency:")
+                    .color(egui::Color32::from_rgb(150, 150, 150))
+                    .size(9.0));
+                ui.label(egui::RichText::new(format!("{:.3} MHz", freq_mhz))
+                    .color(egui::Color32::from_rgb(200, 200, 200))
+                    .size(9.0));
+            });
+        }
+
+        ui.add_space(2.0);
+
+        // Coordinates (subtle)
+        ui.label(egui::RichText::new(format!("{:.4}°, {:.4}°", self.latitude, self.longitude))
+            .color(egui::Color32::from_rgb(120, 120, 120))
+            .size(8.0));
+    }
+}
+
 struct AdsbApp {
     tracker: Arc<Mutex<AircraftTracker>>,
     map_center_lat: f64,
@@ -193,6 +335,8 @@ struct AdsbApp {
     cached_bounds: Option<(f64, f64, f64, f64)>, // (min_lat, max_lat, min_lon, max_lon)
     last_bounds_zoom: f32,
     last_bounds_center: (f64, f64),
+    // Hover popup state
+    hovered_map_item: Option<HoveredMapItem>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -311,6 +455,7 @@ impl AdsbApp {
             cached_bounds: None,
             last_bounds_zoom: 0.0,
             last_bounds_center: (0.0, 0.0),
+            hovered_map_item: None,
         }
     }
 
@@ -490,6 +635,9 @@ impl AdsbApp {
 
         // Draw background
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(200, 220, 240));
+
+        // Reset hover state at start of frame
+        self.hovered_map_item = None;
 
         // Calculate tile size in pixels at current zoom level
         let tile_pixel_size = 256.0;
@@ -778,6 +926,15 @@ impl AdsbApp {
                                 egui::Color32::from_rgb(220, 220, 220),
                             );
                         }
+
+                        // Check for hover
+                        if let Some(hover_pos) = response.hover_pos() {
+                            let distance = hover_pos.distance(pos);
+                            let hover_radius = airport.render_radius() + 8.0; // Add some margin for easier hovering
+                            if distance <= hover_radius {
+                                self.hovered_map_item = Some(HoveredMapItem::Airport(airport.clone()));
+                            }
+                        }
                     }
             }
         }
@@ -814,6 +971,15 @@ impl AdsbApp {
                                 egui::FontId::proportional(8.0),
                                 navaid_color,
                             );
+                        }
+
+                        // Check for hover
+                        if let Some(hover_pos) = response.hover_pos() {
+                            let distance = hover_pos.distance(pos);
+                            let hover_radius = size + 8.0; // Add some margin for easier hovering
+                            if distance <= hover_radius {
+                                self.hovered_map_item = Some(HoveredMapItem::Navaid(navaid.clone()));
+                            }
                         }
                     }
             }
@@ -1113,6 +1279,27 @@ impl AdsbApp {
                 egui::FontId::proportional(12.0),
                 egui::Color32::WHITE,
             );
+        }
+
+        // Render hover popup if hovering over a map item
+        if let Some(ref hovered_item) = self.hovered_map_item {
+            if let Some(hover_pos) = response.hover_pos() {
+                // Position popup with offset to avoid obscuring the item
+                let popup_pos = hover_pos + egui::vec2(15.0, 10.0);
+
+                egui::Area::new("map_item_popup".into())
+                    .fixed_pos(popup_pos)
+                    .order(egui::Order::Tooltip)
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::popup(ui.style())
+                            .show(ui, |ui| {
+                                match hovered_item {
+                                    HoveredMapItem::Airport(airport) => airport.render_popup(ui),
+                                    HoveredMapItem::Navaid(navaid) => navaid.render_popup(ui),
+                                }
+                            });
+                    });
+            }
         }
     }
 }
