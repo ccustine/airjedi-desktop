@@ -41,7 +41,7 @@ The application will automatically:
 - Airport filtering UI with 3 modes (FrequentlyUsed, All, MajorOnly)
 - Background aviation data loading with progress indicator
 - Spatial bounding box calculation for viewport-based filtering
-- Constants: `TRAIL_MAX_AGE_SECONDS` (300s), `TRAIL_SOLID_DURATION_SECONDS` (270s), `TRAIL_FADE_DURATION_SECONDS` (30s)
+- Constants: `TRAIL_MAX_AGE_SECONDS` (300s), `TRAIL_SOLID_DURATION_SECONDS` (225s), `TRAIL_FADE_DURATION_SECONDS` (75s)
 
 **src/basestation.rs** - Core aircraft tracking logic
 - `Aircraft` struct: Stores position, velocity, altitude, track, callsign, and position history
@@ -152,8 +152,8 @@ if distance_from_last > 10.0 {  // Jump detection threshold
 Edit `src/main.rs` constants:
 ```rust
 const TRAIL_MAX_AGE_SECONDS: f32 = 300.0;  // Total history stored (5 minutes)
-const TRAIL_SOLID_DURATION_SECONDS: f32 = 270.0;  // Solid trail duration (4.5 minutes)
-const TRAIL_FADE_DURATION_SECONDS: f32 = 30.0;  // Fade-out period (30 seconds)
+const TRAIL_SOLID_DURATION_SECONDS: f32 = 225.0;  // Solid trail duration (75% - 3.75 minutes)
+const TRAIL_FADE_DURATION_SECONDS: f32 = 75.0;  // Fade-out period (25% - 1.25 minutes)
 ```
 
 ### Cleanup Intervals
