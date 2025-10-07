@@ -44,64 +44,46 @@ struct GeoLocation {
 
 #[cfg(target_os = "macos")]
 fn get_gps_location() -> Option<(f64, f64)> {
-    use cocoa::base::{id, nil};
-    use objc::runtime::Class;
-    use objc::{msg_send, sel, sel_impl};
+    use objc2_core_location::{CLLocationManager, CLAuthorizationStatus};
     use std::time::Duration;
 
     println!("Attempting to get GPS location from CoreLocation...");
 
     unsafe {
-        // Get CLLocationManager class
-        let cls = Class::get("CLLocationManager")?;
-        let manager: id = msg_send![cls, new];
-
-        if manager == nil {
-            println!("Failed to create CLLocationManager");
-            return None;
-        }
+        let manager = CLLocationManager::new();
 
         // Check authorization status
-        let auth_status: i32 = msg_send![cls, authorizationStatus];
+        let auth_status = manager.authorizationStatus();
 
-        // Request authorization if needed (0 = not determined)
-        if auth_status == 0 {
+        // Request authorization if needed
+        if auth_status == CLAuthorizationStatus::NotDetermined {
             println!("Requesting location authorization...");
-            let _: () = msg_send![manager, requestWhenInUseAuthorization];
+            manager.requestWhenInUseAuthorization();
             // Give it a moment to process
             std::thread::sleep(Duration::from_millis(500));
         }
 
         // Start updating location
-        let _: () = msg_send![manager, startUpdatingLocation];
+        manager.startUpdatingLocation();
 
         // Wait a bit for location update
         std::thread::sleep(Duration::from_secs(2));
 
         // Get location
-        let location: id = msg_send![manager, location];
+        if let Some(location) = manager.location() {
+            let coord = location.coordinate();
+            let latitude = coord.latitude;
+            let longitude = coord.longitude;
 
-        if location != nil {
-            // CLLocationCoordinate2D is a struct with latitude and longitude
-            #[repr(C)]
-            struct CLLocationCoordinate2D {
-                latitude: f64,
-                longitude: f64,
-            }
+            manager.stopUpdatingLocation();
 
-            let coord: CLLocationCoordinate2D = msg_send![location, coordinate];
-
-            let _: () = msg_send![manager, stopUpdatingLocation];
-            let _: () = msg_send![manager, release];
-
-            println!("GPS location found: {}, {}", coord.latitude, coord.longitude);
-            return Some((coord.latitude, coord.longitude));
+            println!("GPS location found: {}, {}", latitude, longitude);
+            return Some((latitude, longitude));
         } else {
             println!("No location available from GPS");
         }
 
-        let _: () = msg_send![manager, stopUpdatingLocation];
-        let _: () = msg_send![manager, release];
+        manager.stopUpdatingLocation();
     }
 
     None
