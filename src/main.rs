@@ -17,6 +17,8 @@ mod aircraft_db;
 mod aircraft_metadata;
 mod basestation;
 mod photo_cache;
+mod status;
+mod status_pane;
 mod tcp_client;
 mod tiles;
 
@@ -26,6 +28,8 @@ use aviation_data::{AviationData, Airport, Navaid};
 use basestation::{Aircraft, AircraftTracker};
 use eframe::egui;
 use photo_cache::PhotoTextureManager;
+use status::{SystemStatus, DiagnosticLevel};
+use status_pane::StatusPane;
 use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use tiles::{TileManager, WebMercator};
@@ -431,6 +435,17 @@ impl MapItemPopup for Aircraft {
     }
 }
 
+/// Startup sequence states
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum StartupState {
+    InitializingWindow,
+    DetectingLocation,
+    StartingTcpClient,
+    LoadingAviationData,
+    LoadingAircraftDB,
+    Complete,
+}
+
 struct AdsbApp {
     tracker: Arc<Mutex<AircraftTracker>>,
     map_center_lat: f64,
@@ -459,6 +474,12 @@ struct AdsbApp {
     metadata_service: Arc<MetadataService>,
     pending_metadata: Arc<Mutex<std::collections::HashSet<String>>>, // Track aircraft being fetched
     photo_manager: PhotoTextureManager,
+    // System status and monitoring
+    system_status: Arc<Mutex<SystemStatus>>,
+    status_pane: StatusPane,
+    // Startup sequence tracking
+    startup_state: StartupState,
+    startup_frame_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -511,75 +532,34 @@ impl AdsbApp {
 
     fn new() -> Self {
         println!("Initializing ADSB app...");
+
+        // Initialize core structures
         let tracker = Arc::new(Mutex::new(AircraftTracker::new()));
-
-        // Get current GPS location
-        let (lat, lon) = get_current_location()
-            .unwrap_or_else(|| {
-                println!("Using default location (San Francisco)");
-                (37.7749, -122.4194)
-            });
-
-        // Set the center location in the tracker for distance filtering
-        tracker.lock().unwrap().set_center(lat, lon);
-
-        // Spawn TCP connection in background
-        println!("Starting TCP client thread...");
-        let tracker_clone = tracker.clone();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(tcp_client::connect_adsb_feed(tracker_clone));
-        });
-
-        // Load aviation data in background
-        println!("Starting aviation data download/load in background...");
+        let system_status = Arc::new(Mutex::new(SystemStatus::new()));
         let aviation_data = Arc::new(Mutex::new(AviationData::new()));
         let aviation_data_loading = Arc::new(Mutex::new(true));
-
-        let aviation_data_clone = aviation_data.clone();
-        let loading_clone = aviation_data_loading.clone();
-
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async {
-                match AviationData::load_or_download("data".into()).await {
-                    Ok(data) => {
-                        println!("Aviation data loaded successfully");
-                        *aviation_data_clone.lock().unwrap() = data;
-                        *loading_clone.lock().unwrap() = false;
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to load aviation data: {}", e);
-                        *loading_clone.lock().unwrap() = false;
-                    }
-                }
-            });
-        });
-
-        // Load aircraft database in background
-        println!("Loading aircraft database...");
         let aircraft_db = Arc::new(Mutex::new(AircraftDatabase::new()));
-        let aircraft_db_clone = aircraft_db.clone();
-
-        std::thread::spawn(move || {
-            if let Err(e) = aircraft_db_clone.lock().unwrap().load_or_download() {
-                eprintln!("Failed to load aircraft database: {}", e);
-            }
-        });
-
-        // Initialize metadata service
         let metadata_service = Arc::new(MetadataService::new());
-
-        // Initialize photo manager
         let photo_manager = PhotoTextureManager::new();
 
-        println!("App initialized successfully");
+        // Use default location initially - will be updated during startup sequence
+        let default_lat = 37.7749;
+        let default_lon = -122.4194;
+
+        // Add initial startup diagnostic
+        system_status.lock().unwrap().add_diagnostic(
+            DiagnosticLevel::Info,
+            "Starting AirJedi Desktop...".to_string()
+        );
+
+        println!("App structure initialized - startup will continue in first frames");
+
         Self {
             tracker,
-            map_center_lat: lat,
-            map_center_lon: lon,
-            receiver_lat: lat,
-            receiver_lon: lon,
+            map_center_lat: default_lat,
+            map_center_lon: default_lon,
+            receiver_lat: default_lat,
+            receiver_lon: default_lon,
             map_zoom_level: 8.0, // Zoom level 8 ≈ 150 mile range
             tile_manager: TileManager::new(),
             tile_error: None,
@@ -599,6 +579,10 @@ impl AdsbApp {
             metadata_service,
             pending_metadata: Arc::new(Mutex::new(std::collections::HashSet::new())),
             photo_manager,
+            system_status,
+            status_pane: StatusPane::new(),
+            startup_state: StartupState::InitializingWindow,
+            startup_frame_count: 0,
         }
     }
 
@@ -874,8 +858,8 @@ impl AdsbApp {
         let rect = response.rect;
         let center = rect.center();
 
-        // Draw background
-        painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(200, 220, 240));
+        // Draw background - black to blend with dark map tiles during loading
+        painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(0, 0, 0));
 
         // Reset hover state at start of frame
         self.hovered_map_item = None;
@@ -883,9 +867,22 @@ impl AdsbApp {
         // Calculate tile size in pixels at current zoom level
         let tile_pixel_size = 256.0;
 
-        // Handle pinch-zoom gesture with zoom-to-cursor
-        let zoom_delta = ui.ctx().input(|i| i.zoom_delta());
-        if (zoom_delta - 1.0).abs() > 0.001 {
+        // Handle mouse wheel and scroll zoom (mouse wheel + two-finger trackpad drag)
+        let scroll_delta = ui.ctx().input(|i| i.smooth_scroll_delta);
+
+        // Check for scroll events (mouse wheel or two-finger trackpad)
+        let effective_zoom_delta = if scroll_delta.y.abs() > 0.1 {
+            // Convert scroll to zoom (positive scroll = zoom in, negative = zoom out)
+            // Scale factor: scroll of 100 pixels = 1 zoom level
+            let zoom_factor = scroll_delta.y / 100.0;
+            2.0_f32.powf(zoom_factor * 0.5) // 0.5 makes it less sensitive
+        } else {
+            // Fallback to pinch-zoom gesture
+            ui.ctx().input(|i| i.zoom_delta())
+        };
+
+        // Handle zoom (from either source)
+        if (effective_zoom_delta - 1.0).abs() > 0.001 {
             // Get cursor position for zoom-to-cursor behavior
             let cursor_pos = response.hover_pos().unwrap_or(center);
 
@@ -908,7 +905,7 @@ impl AdsbApp {
             let cursor_lon = tiles::WebMercator::tile_to_lon(cursor_tile_x, old_tile_zoom);
 
             // Apply zoom delta
-            let zoom_change = zoom_delta.log2();
+            let zoom_change = effective_zoom_delta.log2();
             self.map_zoom_level += zoom_change;
             self.map_zoom_level = self.map_zoom_level.clamp(6.0, 12.0);
 
@@ -1485,7 +1482,7 @@ impl AdsbApp {
         painter.text(
             rect.left_top() + egui::vec2(10.0, 10.0),
             egui::Align2::LEFT_TOP,
-            "Drag to pan | Pinch to zoom",
+            "Drag to pan | Scroll/pinch to zoom",
             egui::FontId::proportional(12.0),
             egui::Color32::BLACK,
         );
@@ -1558,9 +1555,163 @@ impl AdsbApp {
 
 impl eframe::App for AdsbApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let frame_start = std::time::Instant::now();
+
+        // Startup sequence - perform initialization steps across first few frames
+        if self.startup_state != StartupState::Complete {
+            self.startup_frame_count += 1;
+
+            match self.startup_state {
+                StartupState::InitializingWindow => {
+                    // Window is now visible, wait 2 frames for UI to settle
+                    if self.startup_frame_count >= 2 {
+                        self.startup_state = StartupState::DetectingLocation;
+                        self.system_status.lock().unwrap().add_diagnostic(
+                            DiagnosticLevel::Info,
+                            "Detecting location...".to_string()
+                        );
+                    }
+                }
+                StartupState::DetectingLocation => {
+                    // Get current GPS location (this may block briefly)
+                    let (lat, lon) = get_current_location()
+                        .unwrap_or_else(|| {
+                            self.system_status.lock().unwrap().add_diagnostic(
+                                DiagnosticLevel::Info,
+                                "Using default location (San Francisco)".to_string()
+                            );
+                            (37.7749, -122.4194)
+                        });
+
+                    // Update location
+                    self.map_center_lat = lat;
+                    self.map_center_lon = lon;
+                    self.receiver_lat = lat;
+                    self.receiver_lon = lon;
+
+                    // Set the center location in the tracker for distance filtering
+                    self.tracker.lock().unwrap().set_center(lat, lon);
+
+                    self.system_status.lock().unwrap().add_diagnostic(
+                        DiagnosticLevel::Info,
+                        format!("Location set: {:.4}°, {:.4}°", lat, lon)
+                    );
+
+                    self.startup_state = StartupState::StartingTcpClient;
+                }
+                StartupState::StartingTcpClient => {
+                    // Spawn TCP connection in background
+                    self.system_status.lock().unwrap().add_diagnostic(
+                        DiagnosticLevel::Info,
+                        "Starting TCP client...".to_string()
+                    );
+
+                    let tracker_clone = self.tracker.clone();
+                    let status_clone = self.system_status.clone();
+                    std::thread::spawn(move || {
+                        let rt = tokio::runtime::Runtime::new().unwrap();
+                        rt.block_on(tcp_client::connect_adsb_feed(tracker_clone, status_clone));
+                    });
+
+                    self.startup_state = StartupState::LoadingAviationData;
+                }
+                StartupState::LoadingAviationData => {
+                    // Load aviation data in background
+                    self.system_status.lock().unwrap().add_diagnostic(
+                        DiagnosticLevel::Info,
+                        "Loading aviation data...".to_string()
+                    );
+
+                    let aviation_data_clone = self.aviation_data.clone();
+                    let loading_clone = self.aviation_data_loading.clone();
+                    let status_clone = self.system_status.clone();
+
+                    std::thread::spawn(move || {
+                        let rt = tokio::runtime::Runtime::new().unwrap();
+                        rt.block_on(async {
+                            match AviationData::load_or_download("data".into()).await {
+                                Ok(data) => {
+                                    let airports_count = data.airports.len();
+                                    let runways_count = data.runways.len();
+                                    let navaids_count = data.navaids.len();
+
+                                    *aviation_data_clone.lock().unwrap() = data;
+                                    *loading_clone.lock().unwrap() = false;
+
+                                    // Update status
+                                    status_clone.lock().unwrap().set_aviation_data(
+                                        airports_count,
+                                        runways_count,
+                                        navaids_count
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to load aviation data: {}", e);
+                                    *loading_clone.lock().unwrap() = false;
+                                    status_clone.lock().unwrap().add_diagnostic(
+                                        DiagnosticLevel::Error,
+                                        format!("Failed to load aviation data: {}", e)
+                                    );
+                                }
+                            }
+                        });
+                    });
+
+                    self.startup_state = StartupState::LoadingAircraftDB;
+                }
+                StartupState::LoadingAircraftDB => {
+                    // Load aircraft database in background
+                    self.system_status.lock().unwrap().add_diagnostic(
+                        DiagnosticLevel::Info,
+                        "Loading aircraft database...".to_string()
+                    );
+
+                    let aircraft_db_clone = self.aircraft_db.clone();
+                    let status_clone = self.system_status.clone();
+
+                    std::thread::spawn(move || {
+                        match aircraft_db_clone.lock().unwrap().load_or_download() {
+                            Ok(size) => {
+                                status_clone.lock().unwrap().set_aircraft_db(size);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to load aircraft database: {}", e);
+                                status_clone.lock().unwrap().add_diagnostic(
+                                    DiagnosticLevel::Error,
+                                    format!("Failed to load aircraft database: {}", e)
+                                );
+                            }
+                        }
+                    });
+
+                    self.startup_state = StartupState::Complete;
+                    self.system_status.lock().unwrap().add_diagnostic(
+                        DiagnosticLevel::Info,
+                        "Startup sequence complete - background loading in progress".to_string()
+                    );
+                }
+                StartupState::Complete => {
+                    // Nothing to do, startup is complete
+                }
+            }
+        }
+
         // Initialize placeholder texture on first frame
         if self.photo_manager.get_placeholder().is_none() {
             self.photo_manager.init_placeholder(ctx);
+        }
+
+        // Update system status with current aircraft stats
+        {
+            let tracker = self.tracker.lock().unwrap();
+            let aircraft_list: Vec<_> = tracker.get_aircraft().into_iter().collect();
+            let total = aircraft_list.len();
+            let active = aircraft_list.iter().filter(|a| {
+                (chrono::Utc::now() - a.last_seen).num_seconds() < 60
+            }).count();
+
+            self.system_status.lock().unwrap().update_aircraft_stats(total, active);
+            self.system_status.lock().unwrap().update_uptime();
         }
 
         // Request immediate repaint only when there's actual movement or interaction
@@ -1710,7 +1861,17 @@ impl eframe::App for AdsbApp {
                 }
             });
 
+        // Render status pane (bottom-left overlay)
+        {
+            let status = self.system_status.lock().unwrap();
+            self.status_pane.render(ctx, &status);
+        }
+
         // Update previous selection for next frame
         self.previous_selected_aircraft = self.selected_aircraft.clone();
+
+        // Update frame time performance metrics
+        let frame_duration = frame_start.elapsed().as_secs_f64() * 1000.0;
+        self.system_status.lock().unwrap().update_performance(frame_duration);
     }
 }

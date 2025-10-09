@@ -18,17 +18,26 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, Duration};
 
 use crate::basestation::AircraftTracker;
+use crate::status::{SharedSystemStatus, ConnectionStatus};
 
-pub async fn connect_adsb_feed(tracker: Arc<Mutex<AircraftTracker>>) {
+pub async fn connect_adsb_feed(tracker: Arc<Mutex<AircraftTracker>>, status: SharedSystemStatus) {
     let address = "localhost:30003";
 
+    // Set initial connection address
+    status.lock().unwrap().connection_address = address.to_string();
+
     loop {
-        match connect_and_process(address, tracker.clone()).await {
+        // Set status to connecting
+        status.lock().unwrap().set_connection_status(ConnectionStatus::Connecting);
+
+        match connect_and_process(address, tracker.clone(), status.clone()).await {
             Ok(_) => {
                 println!("ADSB connection closed normally");
+                status.lock().unwrap().set_connection_status(ConnectionStatus::Disconnected);
             }
             Err(e) => {
                 eprintln!("ADSB connection error: {}", e);
+                status.lock().unwrap().set_connection_error(e.to_string());
             }
         }
 
@@ -43,11 +52,15 @@ const AIRCRAFT_TIMEOUT_SECONDS: i64 = 180; // 3 minutes
 async fn connect_and_process(
     address: &str,
     tracker: Arc<Mutex<AircraftTracker>>,
+    status: SharedSystemStatus,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Connecting to {}...", address);
 
     let stream = TcpStream::connect(address).await?;
     println!("Connected to BaseStation feed");
+
+    // Mark connection as successful
+    status.lock().unwrap().set_connection_status(ConnectionStatus::Connected);
 
     let reader = BufReader::new(stream);
     let mut lines = reader.lines();
@@ -60,6 +73,9 @@ async fn connect_and_process(
                 .expect("Aircraft tracker mutex poisoned");
             tracker_lock.parse_basestation_message(&line);
         }
+
+        // Increment message counter
+        status.lock().unwrap().increment_message_count();
 
         // Cleanup old aircraft every N messages
         cleanup_counter += 1;

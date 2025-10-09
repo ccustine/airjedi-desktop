@@ -41,7 +41,8 @@ impl AircraftDatabase {
     }
 
     /// Load aircraft database from ADS-B Exchange basic-ac-db.json.gz
-    pub fn load_or_download(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Returns the number of aircraft loaded
+    pub fn load_or_download(&mut self) -> Result<usize, Box<dyn std::error::Error>> {
         let cache_dir = dirs::cache_dir()
             .ok_or("Could not determine cache directory")?
             .join("airjedi_egui")
@@ -62,9 +63,10 @@ impl AircraftDatabase {
         // Load database
         self.load_from_file(&db_path)?;
 
-        println!("Aircraft database loaded: {} aircraft", self.aircraft_map.len());
+        let size = self.aircraft_map.len();
+        println!("Aircraft database loaded: {} aircraft", size);
 
-        Ok(())
+        Ok(size)
     }
 
     fn download_database(&self, path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
