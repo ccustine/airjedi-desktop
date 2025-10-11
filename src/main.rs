@@ -868,7 +868,12 @@ impl AdsbApp {
         let tile_pixel_size = 256.0;
 
         // Handle mouse wheel and scroll zoom (mouse wheel + two-finger trackpad drag)
-        let scroll_delta = ui.ctx().input(|i| i.smooth_scroll_delta);
+        // Only capture scroll when hovering over map to avoid conflicts with other scroll areas
+        let scroll_delta = if response.hovered() {
+            ui.ctx().input(|i| i.smooth_scroll_delta)
+        } else {
+            egui::Vec2::ZERO
+        };
 
         // Check for scroll events (mouse wheel or two-finger trackpad)
         let effective_zoom_delta = if scroll_delta.y.abs() > 0.1 {
@@ -1714,19 +1719,20 @@ impl eframe::App for AdsbApp {
             self.system_status.lock().unwrap().update_uptime();
         }
 
-        // Request immediate repaint only when there's actual movement or interaction
-        // Check for pointer movement, velocity, or zoom changes
-        let needs_immediate_repaint = ctx.input(|i| {
-            i.pointer.is_moving()
-            || i.pointer.velocity().length() > 0.0
-            || i.zoom_delta() != 1.0
-            || i.pointer.any_pressed()  // Still need this for initial click response
+        // Request continuous repaints for smooth interaction
+        // Check for active interactions: dragging, zooming, or clicking
+        let is_interacting = ctx.input(|i| {
+            i.pointer.any_down()  // Currently pressing (dragging)
+            || i.smooth_scroll_delta != egui::Vec2::ZERO  // Mouse wheel or trackpad scroll zoom
+            || i.zoom_delta() != 1.0  // Pinch zoom
         });
 
-        if needs_immediate_repaint {
-            ctx.request_repaint(); // Immediate repaint during interaction
+        if is_interacting {
+            // During interaction, request next frame immediately for smooth 60fps
+            ctx.request_repaint_after(std::time::Duration::ZERO);
         } else {
-            ctx.request_repaint_after(std::time::Duration::from_millis(500)); // Periodic updates when idle
+            // When idle, update every 100ms for smooth aircraft movement
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
 
         // Map takes full width
