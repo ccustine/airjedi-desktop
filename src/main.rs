@@ -312,126 +312,128 @@ impl MapItemPopup for Aircraft {
     fn render_popup(&self, ui: &mut egui::Ui) {
         ui.set_min_width(220.0);
 
-        // Callsign or ICAO as header
-        if let Some(ref callsign) = self.callsign {
-            ui.label(egui::RichText::new(callsign.trim())
-                .color(egui::Color32::from_rgb(100, 255, 100))
-                .size(16.0)
-                .strong());
+        self.with_data(|data| {
+            // Callsign or ICAO as header
+            if let Some(ref callsign) = data.callsign {
+                ui.label(egui::RichText::new(callsign.trim())
+                    .color(egui::Color32::from_rgb(100, 255, 100))
+                    .size(16.0)
+                    .strong());
 
-            // ICAO as subtitle
-            ui.label(egui::RichText::new(&self.icao)
-                .color(egui::Color32::from_rgb(180, 180, 180))
-                .size(10.0)
-                .monospace());
-        } else {
-            // Just ICAO if no callsign
-            ui.label(egui::RichText::new(&self.icao)
-                .color(egui::Color32::from_rgb(100, 255, 100))
-                .size(16.0)
-                .strong()
-                .monospace());
-        }
-
-        ui.add_space(4.0);
-
-        // Altitude with color coding
-        if let Some(alt) = self.altitude {
-            let (r, g, b) = AdsbApp::altitude_to_color(Some(alt));
-            let alt_color = egui::Color32::from_rgb(r, g, b);
-
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("▲")
-                    .color(alt_color)
-                    .size(10.0));
-                ui.label(egui::RichText::new(format!("{} ft  (FL{:03})", alt, alt / 100))
-                    .color(alt_color)
+                // ICAO as subtitle
+                ui.label(egui::RichText::new(&data.icao)
+                    .color(egui::Color32::from_rgb(180, 180, 180))
                     .size(10.0)
                     .monospace());
-            });
-        }
-
-        // Velocity/Speed
-        if let Some(vel) = self.velocity {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Speed:")
-                    .color(egui::Color32::from_rgb(150, 150, 150))
-                    .size(9.0));
-                ui.label(egui::RichText::new(format!("{} kts", vel as i32))
-                    .color(egui::Color32::from_rgb(200, 200, 200))
-                    .size(9.0)
-                    .monospace());
-            });
-        }
-
-        // Track/Heading
-        if let Some(track) = self.track {
-            let heading_indicator = match track as i32 {
-                0..=22 | 338..=360 => "N",
-                23..=67 => "NE",
-                68..=112 => "E",
-                113..=157 => "SE",
-                158..=202 => "S",
-                203..=247 => "SW",
-                248..=292 => "W",
-                293..=337 => "NW",
-                _ => "?",
-            };
-
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Heading:")
-                    .color(egui::Color32::from_rgb(150, 150, 150))
-                    .size(9.0));
-                ui.label(egui::RichText::new(format!("{:03}° {}", track as i32, heading_indicator))
-                    .color(egui::Color32::from_rgb(200, 200, 200))
-                    .size(9.0)
-                    .monospace());
-            });
-        }
-
-        // Vertical rate with climbing/descending indicator
-        if let Some(vr) = self.vertical_rate {
-            let (indicator, vr_color) = if vr > 100 {
-                ("↑", egui::Color32::from_rgb(100, 255, 100)) // Climbing - green
-            } else if vr < -100 {
-                ("↓", egui::Color32::from_rgb(255, 150, 100)) // Descending - orange
             } else {
-                ("→", egui::Color32::from_rgb(150, 150, 150)) // Level - gray
+                // Just ICAO if no callsign
+                ui.label(egui::RichText::new(&data.icao)
+                    .color(egui::Color32::from_rgb(100, 255, 100))
+                    .size(16.0)
+                    .strong()
+                    .monospace());
+            }
+
+            ui.add_space(4.0);
+
+            // Altitude with color coding
+            if let Some(alt) = data.altitude {
+                let (r, g, b) = AdsbApp::altitude_to_color(Some(alt));
+                let alt_color = egui::Color32::from_rgb(r, g, b);
+
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("▲")
+                        .color(alt_color)
+                        .size(10.0));
+                    ui.label(egui::RichText::new(format!("{} ft  (FL{:03})", alt, alt / 100))
+                        .color(alt_color)
+                        .size(10.0)
+                        .monospace());
+                });
+            }
+
+            // Velocity/Speed
+            if let Some(vel) = data.velocity {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Speed:")
+                        .color(egui::Color32::from_rgb(150, 150, 150))
+                        .size(9.0));
+                    ui.label(egui::RichText::new(format!("{} kts", vel as i32))
+                        .color(egui::Color32::from_rgb(200, 200, 200))
+                        .size(9.0)
+                        .monospace());
+                });
+            }
+
+            // Track/Heading
+            if let Some(track) = data.track {
+                let heading_indicator = match track as i32 {
+                    0..=22 | 338..=360 => "N",
+                    23..=67 => "NE",
+                    68..=112 => "E",
+                    113..=157 => "SE",
+                    158..=202 => "S",
+                    203..=247 => "SW",
+                    248..=292 => "W",
+                    293..=337 => "NW",
+                    _ => "?",
+                };
+
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Heading:")
+                        .color(egui::Color32::from_rgb(150, 150, 150))
+                        .size(9.0));
+                    ui.label(egui::RichText::new(format!("{:03}° {}", track as i32, heading_indicator))
+                        .color(egui::Color32::from_rgb(200, 200, 200))
+                        .size(9.0)
+                        .monospace());
+                });
+            }
+
+            // Vertical rate with climbing/descending indicator
+            if let Some(vr) = data.vertical_rate {
+                let (indicator, vr_color) = if vr > 100 {
+                    ("↑", egui::Color32::from_rgb(100, 255, 100)) // Climbing - green
+                } else if vr < -100 {
+                    ("↓", egui::Color32::from_rgb(255, 150, 100)) // Descending - orange
+                } else {
+                    ("→", egui::Color32::from_rgb(150, 150, 150)) // Level - gray
+                };
+
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(indicator)
+                        .color(vr_color)
+                        .size(11.0));
+                    ui.label(egui::RichText::new(format!("{:+} ft/min", vr))
+                        .color(vr_color)
+                        .size(9.0)
+                        .monospace());
+                });
+            }
+
+            ui.add_space(2.0);
+
+            // Position coordinates
+            if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
+                ui.label(egui::RichText::new(format!("{:.4}°, {:.4}°", lat, lon))
+                    .color(egui::Color32::from_rgb(120, 120, 120))
+                    .size(8.0));
+            }
+
+            // Last seen
+            let seconds_ago = (chrono::Utc::now() - data.last_seen).num_seconds();
+            let time_color = if seconds_ago < 5 {
+                egui::Color32::from_rgb(100, 255, 100) // Recent - green
+            } else if seconds_ago < 30 {
+                egui::Color32::from_rgb(255, 200, 100) // Moderate - yellow
+            } else {
+                egui::Color32::from_rgb(150, 150, 150) // Old - gray
             };
 
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(indicator)
-                    .color(vr_color)
-                    .size(11.0));
-                ui.label(egui::RichText::new(format!("{:+} ft/min", vr))
-                    .color(vr_color)
-                    .size(9.0)
-                    .monospace());
-            });
-        }
-
-        ui.add_space(2.0);
-
-        // Position coordinates
-        if let (Some(lat), Some(lon)) = (self.latitude, self.longitude) {
-            ui.label(egui::RichText::new(format!("{:.4}°, {:.4}°", lat, lon))
-                .color(egui::Color32::from_rgb(120, 120, 120))
+            ui.label(egui::RichText::new(format!("Updated {}s ago", seconds_ago))
+                .color(time_color)
                 .size(8.0));
-        }
-
-        // Last seen
-        let seconds_ago = (chrono::Utc::now() - self.last_seen).num_seconds();
-        let time_color = if seconds_ago < 5 {
-            egui::Color32::from_rgb(100, 255, 100) // Recent - green
-        } else if seconds_ago < 30 {
-            egui::Color32::from_rgb(255, 200, 100) // Moderate - yellow
-        } else {
-            egui::Color32::from_rgb(150, 150, 150) // Old - gray
-        };
-
-        ui.label(egui::RichText::new(format!("Updated {}s ago", seconds_ago))
-            .color(time_color)
-            .size(8.0));
+        });
     }
 }
 
@@ -619,18 +621,20 @@ impl AdsbApp {
                     metadata_service.fetch_photo_by_icao(&icao).await
                 };
 
-                // Update aircraft with metadata
-                if let Ok(mut tracker) = tracker.lock() {
-                    if let Some(aircraft_map) = tracker.get_aircraft_mut(&icao) {
-                        aircraft_map.registration = registration;
-                        aircraft_map.aircraft_type = aircraft_type;
-                        aircraft_map.metadata_fetched = true;
+                // Update aircraft with metadata using the new API
+                if let Ok(tracker) = tracker.lock() {
+                    if let Some(aircraft) = tracker.get_aircraft_by_icao(&icao) {
+                        aircraft.with_data_mut(|data| {
+                            data.registration = registration;
+                            data.aircraft_type = aircraft_type;
+                            data.metadata_fetched = true;
 
-                        if let Some(metadata) = photo_metadata {
-                            aircraft_map.photo_url = metadata.photo_url;
-                            aircraft_map.photo_thumbnail_url = metadata.photo_thumbnail_url;
-                            aircraft_map.photographer = metadata.photographer;
-                        }
+                            if let Some(metadata) = photo_metadata {
+                                data.photo_url = metadata.photo_url;
+                                data.photo_thumbnail_url = metadata.photo_thumbnail_url;
+                                data.photographer = metadata.photographer;
+                            }
+                        });
                     }
                 }
 
@@ -641,13 +645,14 @@ impl AdsbApp {
     }
 
     fn draw_aircraft_list(&mut self, ui: &mut egui::Ui) {
-        // Clone aircraft data with single lock to avoid holding lock during rendering
-        let (count, aircraft_data): (usize, Vec<Aircraft>) = {
+        // Get aircraft list with cheap Arc clones - no expensive deep copying!
+        let aircraft_data: Vec<Aircraft> = {
             let tracker = self.tracker.lock()
                 .expect("Aircraft tracker mutex poisoned");
-            let aircraft = tracker.get_aircraft();
-            (aircraft.len(), aircraft.into_iter().cloned().collect())
+            tracker.get_aircraft()  // Returns Vec<Aircraft> where Aircraft is Arc<RwLock<...>>
         };
+
+        let count = aircraft_data.len();
 
         // Military-style header
         ui.vertical(|ui| {
@@ -671,19 +676,19 @@ impl AdsbApp {
         let mut aircraft_list: Vec<&Aircraft> = aircraft_data.iter().collect();
         aircraft_list.sort_unstable_by(|a, b| {
             // Sort by altitude descending (highest threat first)
-            b.altitude.unwrap_or(0).cmp(&a.altitude.unwrap_or(0))
+            b.altitude().unwrap_or(0).cmp(&a.altitude().unwrap_or(0))
         });
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.push_id("aircraft_list", |ui| {
                 for aircraft in aircraft_list {
                     // Trigger metadata fetch if not yet fetched
-                    if !aircraft.metadata_fetched {
-                        self.fetch_aircraft_metadata(aircraft.icao.clone());
+                    if !aircraft.metadata_fetched() {
+                        self.fetch_aircraft_metadata(aircraft.icao());
                     }
 
                     // Determine status color based on altitude and recency
-                    let seconds_ago = (chrono::Utc::now() - aircraft.last_seen).num_seconds();
+                    let seconds_ago = (chrono::Utc::now() - aircraft.last_seen()).num_seconds();
                     let (status_color, status_symbol) = if seconds_ago < 10 {
                         (egui::Color32::from_rgb(100, 255, 100), "●") // Active - green
                     } else if seconds_ago < 60 {
@@ -693,7 +698,7 @@ impl AdsbApp {
                     };
 
                     // Altitude-based threat level
-                    let (alt_color, alt_indicator) = match aircraft.altitude {
+                    let (alt_color, alt_indicator) = match aircraft.altitude() {
                         Some(alt) if alt >= 30000 => (egui::Color32::from_rgb(200, 100, 255), "▲"), // High - purple
                         Some(alt) if alt >= 20000 => (egui::Color32::from_rgb(255, 150, 50), "▲"),  // Medium-high - orange
                         Some(alt) if alt >= 10000 => (egui::Color32::from_rgb(200, 200, 100), "▲"), // Medium - yellow
@@ -702,7 +707,8 @@ impl AdsbApp {
                     };
 
                     // Check if this aircraft is selected
-                    let is_selected = self.selected_aircraft.as_ref() == Some(&aircraft.icao);
+                    let icao = aircraft.icao();
+                    let is_selected = self.selected_aircraft.as_ref() == Some(&icao);
 
                     // Create a frame with background color if selected
                     let frame = if is_selected {
@@ -715,8 +721,8 @@ impl AdsbApp {
                     let inner_response = frame.show(ui, |ui| {
                         ui.horizontal(|ui| {
                             // Photo thumbnail on the left
-                            let texture = if let Some(ref photo_url) = aircraft.photo_thumbnail_url {
-                                self.photo_manager.get_or_load_texture(ui.ctx(), photo_url, &aircraft.icao)
+                            let texture = if let Some(ref photo_url) = aircraft.photo_thumbnail_url() {
+                                self.photo_manager.get_or_load_texture(ui.ctx(), &photo_url, &icao)
                             } else {
                                 None
                             };
@@ -740,13 +746,13 @@ impl AdsbApp {
                                         .color(status_color)
                                         .size(12.0));
 
-                                    ui.label(egui::RichText::new(&aircraft.icao)
+                                    ui.label(egui::RichText::new(&icao)
                                         .color(egui::Color32::from_rgb(200, 220, 255))
                                         .size(11.0)
                                         .monospace()
                                         .strong());
 
-                                    if let Some(ref callsign) = aircraft.callsign {
+                                    if let Some(ref callsign) = aircraft.callsign() {
                                         let callsign_color = if is_selected {
                                             egui::Color32::from_rgb(255, 50, 50) // Bright red when selected
                                         } else {
@@ -760,7 +766,7 @@ impl AdsbApp {
 
                                     // Altitude indicator on the right
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if let Some(alt) = aircraft.altitude {
+                                        if let Some(alt) = aircraft.altitude() {
                                             ui.label(egui::RichText::new(format!("{} FL{:03}", alt_indicator, alt / 100))
                                                 .color(alt_color)
                                                 .size(10.0)
@@ -774,7 +780,7 @@ impl AdsbApp {
                                     ui.spacing_mut().item_spacing.x = 8.0;
 
                                     // Speed
-                                    if let Some(vel) = aircraft.velocity {
+                                    if let Some(vel) = aircraft.velocity() {
                                         ui.label(egui::RichText::new(format!("SPD {:03}", vel as i32))
                                             .color(egui::Color32::from_rgb(180, 180, 180))
                                             .size(9.0)
@@ -782,7 +788,7 @@ impl AdsbApp {
                                     }
 
                                     // Track/Heading
-                                    if let Some(track) = aircraft.track {
+                                    if let Some(track) = aircraft.track() {
                                         ui.label(egui::RichText::new(format!("HDG {:03}°", track as i32))
                                             .color(egui::Color32::from_rgb(180, 180, 180))
                                             .size(9.0)
@@ -791,7 +797,7 @@ impl AdsbApp {
                                 });
 
                                 // Position coordinates - dim
-                                if let (Some(lat), Some(lon)) = (aircraft.latitude, aircraft.longitude) {
+                                if let (Some(lat), Some(lon)) = (aircraft.latitude(), aircraft.longitude()) {
                                     ui.label(egui::RichText::new(format!("{:>7.3}° {:>8.3}°", lat, lon))
                                         .color(egui::Color32::from_rgb(120, 120, 120))
                                         .size(8.5)
@@ -800,13 +806,13 @@ impl AdsbApp {
 
                                 // Registration and Aircraft Type
                                 ui.horizontal(|ui| {
-                                    if let Some(ref registration) = aircraft.registration {
+                                    if let Some(ref registration) = aircraft.registration() {
                                         ui.label(egui::RichText::new(format!("REG: {}", registration))
                                             .color(egui::Color32::from_rgb(150, 180, 200))
                                             .size(8.5)
                                             .monospace());
                                     }
-                                    if let Some(ref aircraft_type) = aircraft.aircraft_type {
+                                    if let Some(ref aircraft_type) = aircraft.aircraft_type() {
                                         ui.label(egui::RichText::new(format!("TYPE: {}", aircraft_type))
                                             .color(egui::Color32::from_rgb(180, 150, 200))
                                             .size(8.5)
@@ -828,17 +834,17 @@ impl AdsbApp {
                     // Make the entire frame area clickable
                     let response = ui.interact(
                         inner_response.response.rect,
-                        ui.id().with(&aircraft.icao),
+                        ui.id().with(&icao),
                         egui::Sense::click()
                     );
 
                     // Handle click to select this aircraft
                     if response.clicked() {
-                        self.selected_aircraft = Some(aircraft.icao.clone());
+                        self.selected_aircraft = Some(icao.clone());
                     }
 
                     // Auto-scroll to selected aircraft if it's a new selection
-                    if is_selected && self.previous_selected_aircraft.as_ref() != Some(&aircraft.icao) {
+                    if is_selected && self.previous_selected_aircraft.as_ref() != Some(&icao) {
                         response.scroll_to_me(Some(egui::Align::Center));
                     }
 
@@ -1227,85 +1233,89 @@ impl AdsbApp {
             }
         }
 
-        // Draw aircraft - clone data to release lock quickly
+        // Get aircraft with cheap Arc clones - eliminates the second expensive clone!
         let aircraft_list: Vec<Aircraft> = {
             let tracker = self.tracker.lock()
                 .expect("Aircraft tracker mutex poisoned");
-            tracker.get_aircraft().into_iter().cloned().collect()
+            tracker.get_aircraft()  // Now returns Vec<Aircraft> with Arc clones
         };
 
         for aircraft in &aircraft_list {
             // Draw trail first (so aircraft appears on top)
-            if !aircraft.position_history.is_empty() {
-                let now = chrono::Utc::now();
+            // Use with_data to efficiently access position history
+            aircraft.with_data(|data| {
+                if !data.position_history.is_empty() {
+                    let now = chrono::Utc::now();
 
-                // Draw trail segments
-                for i in 0..aircraft.position_history.len() {
-                    let point = &aircraft.position_history[i];
-                    let age = (now - point.timestamp).num_milliseconds() as f32 / 1000.0;
+                    // Draw trail segments
+                    for i in 0..data.position_history.len() {
+                        let point = &data.position_history[i];
+                        let age = (now - point.timestamp).num_milliseconds() as f32 / 1000.0;
 
-                    // Only draw if age is within trail duration
-                    if age > TRAIL_MAX_AGE_SECONDS {
-                        continue;
+                        // Only draw if age is within trail duration
+                        if age > TRAIL_MAX_AGE_SECONDS {
+                            continue;
+                        }
+
+                        // Calculate opacity based on age
+                        let alpha = if age <= TRAIL_SOLID_DURATION_SECONDS {
+                            255 // Solid for first half
+                        } else {
+                            let fade_age = age - TRAIL_SOLID_DURATION_SECONDS;
+                            let opacity = (1.0 - (fade_age / TRAIL_FADE_DURATION_SECONDS)).clamp(0.0, 1.0);
+                            (opacity * 255.0) as u8
+                        };
+
+                        let trail_pos = to_screen(point.lat, point.lon);
+
+                        // Draw line to next point if there is one
+                        if i + 1 < data.position_history.len() {
+                            let next_point = &data.position_history[i + 1];
+                            let next_age = (now - next_point.timestamp).num_milliseconds() as f32 / 1000.0;
+
+                            // Only draw if next point is also within trail duration
+                            if next_age <= TRAIL_MAX_AGE_SECONDS {
+                                let next_pos = to_screen(next_point.lat, next_point.lon);
+
+                                // Get altitude-based color
+                                let (r, g, b) = Self::altitude_to_color(point.altitude);
+
+                                // Apply time-based transparency to the altitude color
+                                let trail_color = egui::Color32::from_rgba_unmultiplied(r, g, b, alpha);
+                                painter.line_segment(
+                                    [trail_pos, next_pos],
+                                    egui::Stroke::new(2.0, trail_color)
+                                );
+                            }
+                        }
                     }
 
-                    // Calculate opacity based on age
-                    let alpha = if age <= TRAIL_SOLID_DURATION_SECONDS {
-                        255 // Solid for first half
-                    } else {
-                        let fade_age = age - TRAIL_SOLID_DURATION_SECONDS;
-                        let opacity = (1.0 - (fade_age / TRAIL_FADE_DURATION_SECONDS)).clamp(0.0, 1.0);
-                        (opacity * 255.0) as u8
-                    };
+                    // Draw line from last history point to current position if available
+                    if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
+                        if let Some(last_point) = data.position_history.last() {
+                            let last_pos = to_screen(last_point.lat, last_point.lon);
+                            let current_pos = to_screen(lat, lon);
 
-                    let trail_pos = to_screen(point.lat, point.lon);
-
-                    // Draw line to next point if there is one
-                    if i + 1 < aircraft.position_history.len() {
-                        let next_point = &aircraft.position_history[i + 1];
-                        let next_age = (now - next_point.timestamp).num_milliseconds() as f32 / 1000.0;
-
-                        // Only draw if next point is also within trail duration
-                        if next_age <= TRAIL_MAX_AGE_SECONDS {
-                            let next_pos = to_screen(next_point.lat, next_point.lon);
-
-                            // Get altitude-based color
-                            let (r, g, b) = Self::altitude_to_color(point.altitude);
-
-                            // Apply time-based transparency to the altitude color
-                            let trail_color = egui::Color32::from_rgba_unmultiplied(r, g, b, alpha);
+                            // Most recent segment is fully opaque with altitude-based color
+                            let (r, g, b) = Self::altitude_to_color(data.altitude);
+                            let trail_color = egui::Color32::from_rgb(r, g, b);
                             painter.line_segment(
-                                [trail_pos, next_pos],
-                                egui::Stroke::new(2.0, trail_color)
+                                [last_pos, current_pos],
+                                egui::Stroke::new(2.5, trail_color)
                             );
                         }
                     }
                 }
+            });
 
-                // Draw line from last history point to current position if available
-                if let (Some(lat), Some(lon)) = (aircraft.latitude, aircraft.longitude) {
-                    if let Some(last_point) = aircraft.position_history.last() {
-                        let last_pos = to_screen(last_point.lat, last_point.lon);
-                        let current_pos = to_screen(lat, lon);
-
-                        // Most recent segment is fully opaque with altitude-based color
-                        let (r, g, b) = Self::altitude_to_color(aircraft.altitude);
-                        let trail_color = egui::Color32::from_rgb(r, g, b);
-                        painter.line_segment(
-                            [last_pos, current_pos],
-                            egui::Stroke::new(2.5, trail_color)
-                        );
-                    }
-                }
-            }
-
-            if let (Some(lat), Some(lon)) = (aircraft.latitude, aircraft.longitude) {
+            if let (Some(lat), Some(lon)) = (aircraft.latitude(), aircraft.longitude()) {
                 let pos = to_screen(lat, lon);
 
                 // Only draw if within visible area
                 if rect.contains(pos) {
                     // Check if this aircraft is selected
-                    let is_selected = self.selected_aircraft.as_ref() == Some(&aircraft.icao);
+                    let icao = aircraft.icao();
+                    let is_selected = self.selected_aircraft.as_ref() == Some(&icao);
 
                     // Draw aircraft as a circle with selection feedback
                     let (color, radius) = if is_selected {
@@ -1326,7 +1336,7 @@ impl AdsbApp {
                     }
 
                     // Draw heading indicator
-                    if let Some(track) = aircraft.track {
+                    if let Some(track) = aircraft.track() {
                         let angle = track.to_radians();
                         let dx = angle.sin() as f32 * 15.0;
                         let dy = -angle.cos() as f32 * 15.0;
@@ -1338,7 +1348,7 @@ impl AdsbApp {
                     let mut label_offset_y = -10.0; // Start slightly above the icon
 
                     // Draw callsign first (top)
-                    if let Some(ref callsign) = aircraft.callsign {
+                    if let Some(ref callsign) = aircraft.callsign() {
                         let text = callsign.trim();
                         let text_pos = pos + egui::vec2(10.0, label_offset_y);
 
@@ -1373,7 +1383,7 @@ impl AdsbApp {
                     }
 
                     // Draw altitude below callsign
-                    if let Some(alt) = aircraft.altitude {
+                    if let Some(alt) = aircraft.altitude() {
                         let alt_text = format!("{}ft", alt);
                         let text_pos = pos + egui::vec2(10.0, label_offset_y);
 
@@ -1413,7 +1423,7 @@ impl AdsbApp {
                         if distance <= hover_radius {
                             self.hovered_map_item = Some(HoveredMapItem::Aircraft(aircraft.clone()));
                             // Also select the aircraft and trigger auto-scroll in the list
-                            self.selected_aircraft = Some(aircraft.icao.clone());
+                            self.selected_aircraft = Some(icao.clone());
                         }
                     }
                 }
@@ -1427,13 +1437,14 @@ impl AdsbApp {
 
                 // Check all aircraft to see if any were clicked
                 for aircraft in aircraft_list.iter() {
-                    if let (Some(lat), Some(lon)) = (aircraft.latitude, aircraft.longitude) {
+                    if let (Some(lat), Some(lon)) = (aircraft.latitude(), aircraft.longitude()) {
                         let pos = to_screen(lat, lon);
                         if rect.contains(pos) {
+                            let icao = aircraft.icao();
                             let distance = ((click_pos.x - pos.x).powi(2) + (click_pos.y - pos.y).powi(2)).sqrt();
-                            let click_radius = if self.selected_aircraft.as_ref() == Some(&aircraft.icao) { 10.0 } else { 8.0 };
+                            let click_radius = if self.selected_aircraft.as_ref() == Some(&icao) { 10.0 } else { 8.0 };
                             if distance <= click_radius {
-                                clicked_aircraft = Some(aircraft.icao.clone());
+                                clicked_aircraft = Some(icao);
                                 break; // Found a clicked aircraft, stop searching
                             }
                         }
@@ -1709,10 +1720,10 @@ impl eframe::App for AdsbApp {
         // Update system status with current aircraft stats
         {
             let tracker = self.tracker.lock().unwrap();
-            let aircraft_list: Vec<_> = tracker.get_aircraft().into_iter().collect();
+            let aircraft_list = tracker.get_aircraft();  // Cheap Arc clones
             let total = aircraft_list.len();
             let active = aircraft_list.iter().filter(|a| {
-                (chrono::Utc::now() - a.last_seen).num_seconds() < 60
+                (chrono::Utc::now() - a.last_seen()).num_seconds() < 60
             }).count();
 
             self.system_status.lock().unwrap().update_aircraft_stats(total, active);

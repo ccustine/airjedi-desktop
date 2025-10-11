@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use chrono::{DateTime, Utc};
 
 // Calculate distance between two lat/lon points using Haversine formula (in miles)
@@ -39,8 +40,9 @@ pub struct PositionPoint {
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Aircraft {
+/// Inner aircraft data protected by RwLock for thread-safe interior mutability
+#[derive(Debug)]
+pub struct AircraftData {
     pub icao: String,
     pub callsign: Option<String>,
     pub latitude: Option<f64>,
@@ -60,29 +62,122 @@ pub struct Aircraft {
     pub metadata_fetched: bool,
 }
 
+/// Aircraft wrapper that can be cheaply cloned via Arc
+#[derive(Debug, Clone)]
+pub struct Aircraft {
+    inner: Arc<RwLock<AircraftData>>,
+}
+
 impl Aircraft {
     pub fn new(icao: String) -> Self {
         Self {
-            icao,
-            callsign: None,
-            latitude: None,
-            longitude: None,
-            altitude: None,
-            track: None,
-            velocity: None,
-            vertical_rate: None,
-            last_seen: Utc::now(),
-            position_history: Vec::new(),
-            registration: None,
-            aircraft_type: None,
-            photo_url: None,
-            photo_thumbnail_url: None,
-            photographer: None,
-            metadata_fetched: false,
+            inner: Arc::new(RwLock::new(AircraftData {
+                icao,
+                callsign: None,
+                latitude: None,
+                longitude: None,
+                altitude: None,
+                track: None,
+                velocity: None,
+                vertical_rate: None,
+                last_seen: Utc::now(),
+                position_history: Vec::new(),
+                registration: None,
+                aircraft_type: None,
+                photo_url: None,
+                photo_thumbnail_url: None,
+                photographer: None,
+                metadata_fetched: false,
+            })),
         }
     }
 
-    pub fn update_position(&mut self, lat: f64, lon: f64, center_lat: f64, center_lon: f64, max_distance: f64) -> bool {
+    // Convenience accessor methods for common read-only operations
+    pub fn icao(&self) -> String {
+        self.inner.read().unwrap().icao.clone()
+    }
+
+    pub fn callsign(&self) -> Option<String> {
+        self.inner.read().unwrap().callsign.clone()
+    }
+
+    pub fn latitude(&self) -> Option<f64> {
+        self.inner.read().unwrap().latitude
+    }
+
+    pub fn longitude(&self) -> Option<f64> {
+        self.inner.read().unwrap().longitude
+    }
+
+    pub fn altitude(&self) -> Option<i32> {
+        self.inner.read().unwrap().altitude
+    }
+
+    pub fn track(&self) -> Option<f64> {
+        self.inner.read().unwrap().track
+    }
+
+    pub fn velocity(&self) -> Option<f64> {
+        self.inner.read().unwrap().velocity
+    }
+
+    pub fn vertical_rate(&self) -> Option<i32> {
+        self.inner.read().unwrap().vertical_rate
+    }
+
+    pub fn last_seen(&self) -> DateTime<Utc> {
+        self.inner.read().unwrap().last_seen
+    }
+
+    pub fn registration(&self) -> Option<String> {
+        self.inner.read().unwrap().registration.clone()
+    }
+
+    pub fn aircraft_type(&self) -> Option<String> {
+        self.inner.read().unwrap().aircraft_type.clone()
+    }
+
+    pub fn photo_url(&self) -> Option<String> {
+        self.inner.read().unwrap().photo_url.clone()
+    }
+
+    pub fn photo_thumbnail_url(&self) -> Option<String> {
+        self.inner.read().unwrap().photo_thumbnail_url.clone()
+    }
+
+    pub fn photographer(&self) -> Option<String> {
+        self.inner.read().unwrap().photographer.clone()
+    }
+
+    pub fn metadata_fetched(&self) -> bool {
+        self.inner.read().unwrap().metadata_fetched
+    }
+
+    pub fn position_history(&self) -> Vec<PositionPoint> {
+        self.inner.read().unwrap().position_history.clone()
+    }
+
+    // Method to execute a read closure with locked data
+    pub fn with_data<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&AircraftData) -> R,
+    {
+        let data = self.inner.read().unwrap();
+        f(&data)
+    }
+
+    // Method to execute a write closure with locked data
+    pub fn with_data_mut<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut AircraftData) -> R,
+    {
+        let mut data = self.inner.write().unwrap();
+        f(&mut data)
+    }
+
+    pub fn update_position(&self, lat: f64, lon: f64, center_lat: f64, center_lon: f64, max_distance: f64) -> bool {
+        let mut data = self.inner.write().unwrap();
+
         // Check if position is within max distance from center
         let distance_from_center = haversine_distance(center_lat, center_lon, lat, lon);
         if distance_from_center > max_distance {
@@ -90,18 +185,18 @@ impl Aircraft {
         }
 
         // Check if position is within 10 miles of previous position
-        if let (Some(last_lat), Some(last_lon)) = (self.latitude, self.longitude) {
+        if let (Some(last_lat), Some(last_lon)) = (data.latitude, data.longitude) {
             let distance_from_last = haversine_distance(last_lat, last_lon, lat, lon);
             if distance_from_last > 10.0 {
                 // Position jump too large - reject
                 println!("Rejected position for {}: jumped {:.1} miles (max 10 miles allowed)",
-                    self.icao, distance_from_last);
+                    data.icao, distance_from_last);
                 return false;
             }
         }
 
         // Only add to history if position has changed significantly (> ~100 meters)
-        let should_add = if let (Some(last_lat), Some(last_lon)) = (self.latitude, self.longitude) {
+        let should_add = if let (Some(last_lat), Some(last_lon)) = (data.latitude, data.longitude) {
             let distance = ((lat - last_lat).powi(2) + (lon - last_lon).powi(2)).sqrt();
             distance > 0.001 // roughly 100 meters at mid-latitudes
         } else {
@@ -109,22 +204,24 @@ impl Aircraft {
         };
 
         if should_add {
-            self.position_history.push(PositionPoint {
+            let altitude = data.altitude;  // Read altitude first
+            data.position_history.push(PositionPoint {
                 lat,
                 lon,
-                altitude: self.altitude,
+                altitude,
                 timestamp: Utc::now(),
             });
         }
 
-        self.latitude = Some(lat);
-        self.longitude = Some(lon);
+        data.latitude = Some(lat);
+        data.longitude = Some(lon);
         true
     }
 
-    pub fn cleanup_old_history(&mut self, max_age_seconds: i64) {
+    pub fn cleanup_old_history(&self, max_age_seconds: i64) {
+        let mut data = self.inner.write().unwrap();
         let now = Utc::now();
-        self.position_history.retain(|point| {
+        data.position_history.retain(|point| {
             (now - point.timestamp).num_seconds() < max_age_seconds
         });
     }
@@ -158,25 +255,27 @@ impl AircraftTracker {
         self.center_lon = lon;
     }
 
-    pub fn get_aircraft(&self) -> Vec<&Aircraft> {
-        self.aircraft.values().collect()
+    /// Get all aircraft - returns cheap Arc clones
+    pub fn get_aircraft(&self) -> Vec<Aircraft> {
+        self.aircraft.values().cloned().collect()
     }
 
-    pub fn get_aircraft_mut(&mut self, icao: &str) -> Option<&mut Aircraft> {
-        self.aircraft.get_mut(icao)
+    /// Get a specific aircraft by ICAO - returns cheap Arc clone
+    pub fn get_aircraft_by_icao(&self, icao: &str) -> Option<Aircraft> {
+        self.aircraft.get(icao).cloned()
     }
 
     pub fn cleanup_old(&mut self, max_age_seconds: i64) {
         let now = Utc::now();
 
         // Clean up old position history for all aircraft
-        for aircraft in self.aircraft.values_mut() {
+        for aircraft in self.aircraft.values() {
             aircraft.cleanup_old_history(300); // Keep 5 minutes of history
         }
 
         // Remove aircraft that haven't been seen recently
         self.aircraft.retain(|_, aircraft| {
-            (now - aircraft.last_seen).num_seconds() < max_age_seconds
+            (now - aircraft.last_seen()).num_seconds() < max_age_seconds
         });
     }
 
@@ -200,7 +299,11 @@ impl AircraftTracker {
         }
 
         let aircraft = self.aircraft.entry(icao.clone()).or_insert_with(|| Aircraft::new(icao));
-        aircraft.last_seen = Utc::now();
+
+        // Update last seen timestamp
+        aircraft.with_data_mut(|data| {
+            data.last_seen = Utc::now();
+        });
 
         match msg_type {
             "MSG" => {
@@ -214,7 +317,9 @@ impl AircraftTracker {
                     "1" => {
                         // Aircraft identification (callsign)
                         if parts.len() > 10 && !parts[10].is_empty() {
-                            aircraft.callsign = Some(parts[10].trim().to_string());
+                            aircraft.with_data_mut(|data| {
+                                data.callsign = Some(parts[10].trim().to_string());
+                            });
                         }
                     }
                     "3" => {
@@ -222,7 +327,9 @@ impl AircraftTracker {
                         if parts.len() > 15 {
                             if !parts[11].is_empty() {
                                 if let Ok(alt) = parts[11].parse::<i32>() {
-                                    aircraft.altitude = Some(alt);
+                                    aircraft.with_data_mut(|data| {
+                                        data.altitude = Some(alt);
+                                    });
                                 }
                             }
                             if !parts[14].is_empty() && !parts[15].is_empty() {
@@ -235,28 +342,32 @@ impl AircraftTracker {
                     "4" => {
                         // Airborne velocity
                         if parts.len() > 13 {
-                            if !parts[12].is_empty() {
-                                if let Ok(speed) = parts[12].parse::<f64>() {
-                                    aircraft.velocity = Some(speed);
+                            aircraft.with_data_mut(|data| {
+                                if !parts[12].is_empty() {
+                                    if let Ok(speed) = parts[12].parse::<f64>() {
+                                        data.velocity = Some(speed);
+                                    }
                                 }
-                            }
-                            if !parts[13].is_empty() {
-                                if let Ok(track) = parts[13].parse::<f64>() {
-                                    aircraft.track = Some(track);
+                                if !parts[13].is_empty() {
+                                    if let Ok(track) = parts[13].parse::<f64>() {
+                                        data.track = Some(track);
+                                    }
                                 }
-                            }
-                            if parts.len() > 16 && !parts[16].is_empty() {
-                                if let Ok(vr) = parts[16].parse::<i32>() {
-                                    aircraft.vertical_rate = Some(vr);
+                                if parts.len() > 16 && !parts[16].is_empty() {
+                                    if let Ok(vr) = parts[16].parse::<i32>() {
+                                        data.vertical_rate = Some(vr);
+                                    }
                                 }
-                            }
+                            });
                         }
                     }
                     "5" => {
                         // Surveillance altitude
                         if parts.len() > 11 && !parts[11].is_empty() {
                             if let Ok(alt) = parts[11].parse::<i32>() {
-                                aircraft.altitude = Some(alt);
+                                aircraft.with_data_mut(|data| {
+                                    data.altitude = Some(alt);
+                                });
                             }
                         }
                     }
@@ -265,7 +376,9 @@ impl AircraftTracker {
                         if parts.len() > 15 {
                             if !parts[11].is_empty() {
                                 if let Ok(alt) = parts[11].parse::<i32>() {
-                                    aircraft.altitude = Some(alt);
+                                    aircraft.with_data_mut(|data| {
+                                        data.altitude = Some(alt);
+                                    });
                                 }
                             }
                             if !parts[14].is_empty() && !parts[15].is_empty() {
@@ -279,7 +392,9 @@ impl AircraftTracker {
                         // Air-to-air message
                         if parts.len() > 11 && !parts[11].is_empty() {
                             if let Ok(alt) = parts[11].parse::<i32>() {
-                                aircraft.altitude = Some(alt);
+                                aircraft.with_data_mut(|data| {
+                                    data.altitude = Some(alt);
+                                });
                             }
                         }
                     }
@@ -287,7 +402,9 @@ impl AircraftTracker {
                         // All call reply
                         if parts.len() > 11 && !parts[11].is_empty() {
                             if let Ok(alt) = parts[11].parse::<i32>() {
-                                aircraft.altitude = Some(alt);
+                                aircraft.with_data_mut(|data| {
+                                    data.altitude = Some(alt);
+                                });
                             }
                         }
                     }
