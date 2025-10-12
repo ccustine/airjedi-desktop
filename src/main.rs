@@ -1099,9 +1099,20 @@ impl AdsbApp {
 
         // Draw aviation overlays (now using cloned data, no lock held)
         // Runways (draw first, so they appear under airports)
-        if self.show_runways && self.map_zoom_level >= 8.0 {
+        // PERFORMANCE: Only render runways at high zoom levels where they're distinguishable
+        if self.show_runways && self.map_zoom_level >= 9.5 {
+            // Limit runway rendering count when zoomed out
+            let max_runways = if self.map_zoom_level >= 11.0 { usize::MAX } else { 500 };
+            let mut runways_drawn = 0;
+
             for (_airport_icao, runways) in &airport_runways {
+                if runways_drawn >= max_runways {
+                    break;
+                }
                 for runway in runways {
+                    if runways_drawn >= max_runways {
+                        break;
+                    }
                     if let (Some(le_lat), Some(le_lon), Some(he_lat), Some(he_lon)) =
                         (runway.le_latitude, runway.le_longitude, runway.he_latitude, runway.he_longitude)
                     {
@@ -1115,121 +1126,166 @@ impl AdsbApp {
                                 [le_pos, he_pos],
                                 egui::Stroke::new(runway.stroke_width(), runway_color)
                             );
+                            runways_drawn += 1;
                         }
                     }
                 }
             }
         }
 
-        // Airports
+        // Airports - with aggressive LOD optimization for performance
         if self.show_airports {
-            for airport in &visible_airports {
-                    // Apply airport filter
-                    let should_show = match self.airport_filter {
-                        AirportFilter::All => {
-                            // Show all airplane airports, but filter small ones by zoom
-                            airport.is_public_airplane_airport() &&
-                            (airport.is_major() || airport.is_medium() || self.map_zoom_level >= 9.0)
-                        }
-                        AirportFilter::FrequentlyUsed => {
-                            // Show frequently used airports (scheduled service or large/medium)
-                            airport.is_frequently_used()
-                        }
-                        AirportFilter::MajorOnly => {
-                            // Show only large airports
-                            airport.is_major()
-                        }
+            // PERFORMANCE: Limit airport count based on zoom level
+            // When zoomed out, only show the most important airports
+            let max_airports = if self.map_zoom_level >= 10.0 {
+                usize::MAX  // Show all at high zoom
+            } else if self.map_zoom_level >= 9.0 {
+                1000  // Moderate limit for medium zoom
+            } else if self.map_zoom_level >= 8.0 {
+                500   // Stricter limit for lower zoom
+            } else {
+                200   // Very strict limit when zoomed out
+            };
+
+            let mut airports_drawn = 0;
+
+            // PERFORMANCE: Prioritize major airports when zoomed out
+            // Sort airports by importance (major > medium > small) before rendering
+            let mut prioritized_airports: Vec<_> = visible_airports.iter().collect();
+            prioritized_airports.sort_by_key(|a| {
+                if a.is_major() { 0 }
+                else if a.is_medium() { 1 }
+                else { 2 }
+            });
+
+            for airport in prioritized_airports {
+                if airports_drawn >= max_airports {
+                    break;
+                }
+
+                // Apply airport filter with zoom-based refinement
+                let should_show = match self.airport_filter {
+                    AirportFilter::All => {
+                        // Show all airplane airports, but filter small ones by zoom
+                        airport.is_public_airplane_airport() &&
+                        (airport.is_major() || airport.is_medium() || self.map_zoom_level >= 9.5)
+                    }
+                    AirportFilter::FrequentlyUsed => {
+                        // Show frequently used airports (scheduled service or large/medium)
+                        airport.is_frequently_used()
+                    }
+                    AirportFilter::MajorOnly => {
+                        // Show only large airports
+                        airport.is_major()
+                    }
+                };
+
+                if !should_show {
+                    continue;
+                }
+
+                let pos = to_screen(airport.latitude, airport.longitude);
+
+                // Only draw if within visible area
+                if rect.contains(pos) {
+                    let airport_color = if airport.is_major() {
+                        egui::Color32::from_rgb(200, 100, 100) // Red for large airports
+                    } else if airport.is_medium() {
+                        egui::Color32::from_rgb(150, 150, 100) // Yellow for medium
+                    } else {
+                        egui::Color32::from_rgb(120, 120, 120) // Gray for small
                     };
 
-                    if !should_show {
-                        continue;
-                    }
+                    painter.circle_filled(pos, airport.render_radius(), airport_color);
+                    painter.circle_stroke(
+                        pos,
+                        airport.render_radius(),
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 255, 255)),
+                    );
 
-                    let pos = to_screen(airport.latitude, airport.longitude);
-
-                    // Only draw if within visible area
-                    if rect.contains(pos) {
-                        let airport_color = if airport.is_major() {
-                            egui::Color32::from_rgb(200, 100, 100) // Red for large airports
-                        } else if airport.is_medium() {
-                            egui::Color32::from_rgb(150, 150, 100) // Yellow for medium
-                        } else {
-                            egui::Color32::from_rgb(120, 120, 120) // Gray for small
-                        };
-
-                        painter.circle_filled(pos, airport.render_radius(), airport_color);
-                        painter.circle_stroke(
-                            pos,
-                            airport.render_radius(),
-                            egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 255, 255)),
+                    // PERFORMANCE: Only draw labels at high zoom levels (text rendering is expensive)
+                    if self.map_zoom_level >= 9.0 {
+                        painter.text(
+                            pos + egui::vec2(0.0, -12.0),
+                            egui::Align2::CENTER_BOTTOM,
+                            &airport.icao,
+                            egui::FontId::proportional(9.0),
+                            egui::Color32::from_rgb(220, 220, 220),
                         );
+                    }
 
-                        // Draw airport ICAO label at higher zoom levels
-                        if self.map_zoom_level >= 8.0 {
-                            painter.text(
-                                pos + egui::vec2(0.0, -12.0),
-                                egui::Align2::CENTER_BOTTOM,
-                                &airport.icao,
-                                egui::FontId::proportional(9.0),
-                                egui::Color32::from_rgb(220, 220, 220),
-                            );
-                        }
-
-                        // Check for hover
-                        if let Some(hover_pos) = response.hover_pos() {
-                            let distance = hover_pos.distance(pos);
-                            let hover_radius = airport.render_radius() + 8.0; // Add some margin for easier hovering
-                            if distance <= hover_radius {
-                                self.hovered_map_item = Some(HoveredMapItem::Airport(airport.clone()));
-                            }
+                    // Check for hover
+                    if let Some(hover_pos) = response.hover_pos() {
+                        let distance = hover_pos.distance(pos);
+                        let hover_radius = airport.render_radius() + 8.0; // Add some margin for easier hovering
+                        if distance <= hover_radius {
+                            self.hovered_map_item = Some(HoveredMapItem::Airport(airport.clone()));
                         }
                     }
+
+                    airports_drawn += 1;
+                }
             }
         }
 
-        // Navaids
-        if self.show_navaids && self.map_zoom_level >= 8.0 {
+        // Navaids - with count limiting for performance
+        if self.show_navaids && self.map_zoom_level >= 9.0 {
+            // PERFORMANCE: Limit navaid rendering based on zoom
+            let max_navaids = if self.map_zoom_level >= 10.0 {
+                1000  // Show more at high zoom
+            } else {
+                300   // Limit at medium zoom
+            };
+
+            let mut navaids_drawn = 0;
+
             for navaid in &visible_navaids {
-                    let pos = to_screen(navaid.latitude, navaid.longitude);
+                if navaids_drawn >= max_navaids {
+                    break;
+                }
 
-                    // Only draw if within visible area
-                    if rect.contains(pos) {
-                        let (r, g, b) = navaid.get_color();
-                        let navaid_color = egui::Color32::from_rgb(r, g, b);
-                        let size = navaid.symbol_size();
+                let pos = to_screen(navaid.latitude, navaid.longitude);
 
-                        // Draw as a triangle
-                        let points = vec![
-                            pos + egui::vec2(0.0, -size),
-                            pos + egui::vec2(size * 0.866, size * 0.5),
-                            pos + egui::vec2(-size * 0.866, size * 0.5),
-                        ];
-                        painter.add(egui::Shape::convex_polygon(
-                            points,
+                // Only draw if within visible area
+                if rect.contains(pos) {
+                    let (r, g, b) = navaid.get_color();
+                    let navaid_color = egui::Color32::from_rgb(r, g, b);
+                    let size = navaid.symbol_size();
+
+                    // Draw as a triangle
+                    let points = vec![
+                        pos + egui::vec2(0.0, -size),
+                        pos + egui::vec2(size * 0.866, size * 0.5),
+                        pos + egui::vec2(-size * 0.866, size * 0.5),
+                    ];
+                    painter.add(egui::Shape::convex_polygon(
+                        points,
+                        navaid_color,
+                        egui::Stroke::new(1.0, egui::Color32::WHITE),
+                    ));
+
+                    // PERFORMANCE: Only draw labels at higher zoom levels (text is expensive)
+                    if self.map_zoom_level >= 10.0 {
+                        painter.text(
+                            pos + egui::vec2(0.0, size + 8.0),
+                            egui::Align2::CENTER_TOP,
+                            &navaid.ident,
+                            egui::FontId::proportional(8.0),
                             navaid_color,
-                            egui::Stroke::new(1.0, egui::Color32::WHITE),
-                        ));
+                        );
+                    }
 
-                        // Draw navaid ident at higher zoom levels
-                        if self.map_zoom_level >= 9.0 {
-                            painter.text(
-                                pos + egui::vec2(0.0, size + 8.0),
-                                egui::Align2::CENTER_TOP,
-                                &navaid.ident,
-                                egui::FontId::proportional(8.0),
-                                navaid_color,
-                            );
-                        }
-
-                        // Check for hover
-                        if let Some(hover_pos) = response.hover_pos() {
-                            let distance = hover_pos.distance(pos);
-                            let hover_radius = size + 8.0; // Add some margin for easier hovering
-                            if distance <= hover_radius {
-                                self.hovered_map_item = Some(HoveredMapItem::Navaid(navaid.clone()));
-                            }
+                    // Check for hover
+                    if let Some(hover_pos) = response.hover_pos() {
+                        let distance = hover_pos.distance(pos);
+                        let hover_radius = size + 8.0; // Add some margin for easier hovering
+                        if distance <= hover_radius {
+                            self.hovered_map_item = Some(HoveredMapItem::Navaid(navaid.clone()));
                         }
                     }
+
+                    navaids_drawn += 1;
+                }
             }
         }
 
@@ -1240,73 +1296,111 @@ impl AdsbApp {
             tracker.get_aircraft()  // Now returns Vec<Aircraft> with Arc clones
         };
 
+        // PERFORMANCE: Trail rendering with aggressive LOD optimization
+        // When zoomed out, trails are microscopic and expensive to render
+        let should_draw_trails = self.map_zoom_level >= 8.0;
+        let trail_detail_level = if self.map_zoom_level >= 10.0 {
+            1  // Full detail: render every point
+        } else if self.map_zoom_level >= 9.0 {
+            2  // Medium detail: render every 2nd point
+        } else {
+            4  // Low detail: render every 4th point
+        };
+
         for aircraft in &aircraft_list {
             // Draw trail first (so aircraft appears on top)
-            // Use with_data to efficiently access position history
-            aircraft.with_data(|data| {
-                if !data.position_history.is_empty() {
-                    let now = chrono::Utc::now();
+            // PERFORMANCE: Skip trail rendering entirely when zoomed out (trails invisible)
+            if should_draw_trails {
+                // Use with_data to efficiently access position history
+                aircraft.with_data(|data| {
+                if data.position_history.is_empty() {
+                    return;
+                }
 
-                    // Draw trail segments
-                    for i in 0..data.position_history.len() {
-                        let point = &data.position_history[i];
-                        let age = (now - point.timestamp).num_milliseconds() as f32 / 1000.0;
+                // PERFORMANCE: Skip trail processing if aircraft is far outside viewport
+                // Quick bounds check before expensive trail rendering
+                if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
+                    let screen_pos = to_screen(lat, lon);
+                    let margin = 100.0; // Extra margin to catch trails extending beyond aircraft
+                    let expanded_rect = rect.expand(margin);
 
-                        // Only draw if age is within trail duration
-                        if age > TRAIL_MAX_AGE_SECONDS {
-                            continue;
-                        }
-
-                        // Calculate opacity based on age
-                        let alpha = if age <= TRAIL_SOLID_DURATION_SECONDS {
-                            255 // Solid for first half
-                        } else {
-                            let fade_age = age - TRAIL_SOLID_DURATION_SECONDS;
-                            let opacity = (1.0 - (fade_age / TRAIL_FADE_DURATION_SECONDS)).clamp(0.0, 1.0);
-                            (opacity * 255.0) as u8
-                        };
-
-                        let trail_pos = to_screen(point.lat, point.lon);
-
-                        // Draw line to next point if there is one
-                        if i + 1 < data.position_history.len() {
-                            let next_point = &data.position_history[i + 1];
-                            let next_age = (now - next_point.timestamp).num_milliseconds() as f32 / 1000.0;
-
-                            // Only draw if next point is also within trail duration
-                            if next_age <= TRAIL_MAX_AGE_SECONDS {
-                                let next_pos = to_screen(next_point.lat, next_point.lon);
-
-                                // Get altitude-based color
-                                let (r, g, b) = Self::altitude_to_color(point.altitude);
-
-                                // Apply time-based transparency to the altitude color
-                                let trail_color = egui::Color32::from_rgba_unmultiplied(r, g, b, alpha);
-                                painter.line_segment(
-                                    [trail_pos, next_pos],
-                                    egui::Stroke::new(2.0, trail_color)
-                                );
-                            }
-                        }
-                    }
-
-                    // Draw line from last history point to current position if available
-                    if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
-                        if let Some(last_point) = data.position_history.last() {
-                            let last_pos = to_screen(last_point.lat, last_point.lon);
-                            let current_pos = to_screen(lat, lon);
-
-                            // Most recent segment is fully opaque with altitude-based color
-                            let (r, g, b) = Self::altitude_to_color(data.altitude);
-                            let trail_color = egui::Color32::from_rgb(r, g, b);
-                            painter.line_segment(
-                                [last_pos, current_pos],
-                                egui::Stroke::new(2.5, trail_color)
-                            );
-                        }
+                    if !expanded_rect.contains(screen_pos) {
+                        // Aircraft is off-screen, skip trail rendering
+                        return;
                     }
                 }
-            });
+
+                let now = chrono::Utc::now();
+
+                // PERFORMANCE: Render trails with level-of-detail decimation
+                // Skip points based on zoom level to reduce computation
+                let mut points_drawn = 0;
+                for i in (0..data.position_history.len()).step_by(trail_detail_level) {
+                    let point = &data.position_history[i];
+                    let age = (now - point.timestamp).num_milliseconds() as f32 / 1000.0;
+
+                    // Only draw if age is within trail duration
+                    if age > TRAIL_MAX_AGE_SECONDS {
+                        continue;
+                    }
+
+                    // Calculate opacity based on age
+                    let alpha = if age <= TRAIL_SOLID_DURATION_SECONDS {
+                        255 // Solid for first half
+                    } else {
+                        let fade_age = age - TRAIL_SOLID_DURATION_SECONDS;
+                        let opacity = (1.0 - (fade_age / TRAIL_FADE_DURATION_SECONDS)).clamp(0.0, 1.0);
+                        (opacity * 255.0) as u8
+                    };
+
+                    let trail_pos = to_screen(point.lat, point.lon);
+
+                    // Draw line to next point (accounting for step size)
+                    let next_idx = i + trail_detail_level;
+                    if next_idx < data.position_history.len() {
+                        let next_point = &data.position_history[next_idx];
+                        let next_age = (now - next_point.timestamp).num_milliseconds() as f32 / 1000.0;
+
+                        // Only draw if next point is also within trail duration
+                        if next_age <= TRAIL_MAX_AGE_SECONDS {
+                            let next_pos = to_screen(next_point.lat, next_point.lon);
+
+                            // Get altitude-based color
+                            let (r, g, b) = Self::altitude_to_color(point.altitude);
+
+                            // Apply time-based transparency to the altitude color
+                            let trail_color = egui::Color32::from_rgba_unmultiplied(r, g, b, alpha);
+                            painter.line_segment(
+                                [trail_pos, next_pos],
+                                egui::Stroke::new(2.0, trail_color)
+                            );
+                            points_drawn += 1;
+                        }
+                    }
+
+                    // PERFORMANCE: Limit total trail segments drawn per aircraft when zoomed out
+                    if points_drawn >= 100 && self.map_zoom_level < 9.0 {
+                        break;
+                    }
+                }
+
+                // Always draw line from last history point to current position for smooth connection
+                if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
+                    if let Some(last_point) = data.position_history.last() {
+                        let last_pos = to_screen(last_point.lat, last_point.lon);
+                        let current_pos = to_screen(lat, lon);
+
+                        // Most recent segment is fully opaque with altitude-based color
+                        let (r, g, b) = Self::altitude_to_color(data.altitude);
+                        let trail_color = egui::Color32::from_rgb(r, g, b);
+                        painter.line_segment(
+                            [last_pos, current_pos],
+                            egui::Stroke::new(2.5, trail_color)
+                        );
+                    }
+                }
+                });
+            }
 
             if let (Some(lat), Some(lon)) = (aircraft.latitude(), aircraft.longitude()) {
                 let pos = to_screen(lat, lon);

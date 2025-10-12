@@ -24,3 +24,6 @@ lazy_static = "1.4"
 objc2 = "0.6"
 objc2-core-location = "0.3"
 objc2-foundation = "0.3"
+
+[profile.release]
+debug = true  # Enable debug symbols for profiling while keeping optimizations
