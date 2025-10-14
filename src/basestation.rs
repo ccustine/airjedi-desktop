@@ -13,8 +13,9 @@
 // limitations under the License.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Mutex};
 use chrono::{DateTime, Utc};
+use crate::status::SystemStatus;
 
 // Calculate distance between two lat/lon points using Haversine formula (in miles)
 fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
@@ -232,6 +233,7 @@ pub struct AircraftTracker {
     center_lat: f64,
     center_lon: f64,
     max_distance_miles: f64,
+    status: Option<Arc<Mutex<SystemStatus>>>,
 }
 
 impl Default for AircraftTracker {
@@ -247,7 +249,12 @@ impl AircraftTracker {
             center_lat: 0.0,
             center_lon: 0.0,
             max_distance_miles: 400.0,
+            status: None,
         }
+    }
+
+    pub fn set_status(&mut self, status: Arc<Mutex<SystemStatus>>) {
+        self.status = Some(status);
     }
 
     pub fn set_center(&mut self, lat: f64, lon: f64) {
@@ -334,7 +341,13 @@ impl AircraftTracker {
                             }
                             if !parts[14].is_empty() && !parts[15].is_empty() {
                                 if let (Ok(lat), Ok(lon)) = (parts[14].parse::<f64>(), parts[15].parse::<f64>()) {
-                                    aircraft.update_position(lat, lon, self.center_lat, self.center_lon, self.max_distance_miles);
+                                    let updated = aircraft.update_position(lat, lon, self.center_lat, self.center_lon, self.max_distance_miles);
+                                    // Record position update for sparkline tracking
+                                    if updated {
+                                        if let Some(ref status) = self.status {
+                                            status.lock().unwrap().record_position_update();
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -383,7 +396,13 @@ impl AircraftTracker {
                             }
                             if !parts[14].is_empty() && !parts[15].is_empty() {
                                 if let (Ok(lat), Ok(lon)) = (parts[14].parse::<f64>(), parts[15].parse::<f64>()) {
-                                    aircraft.update_position(lat, lon, self.center_lat, self.center_lon, self.max_distance_miles);
+                                    let updated = aircraft.update_position(lat, lon, self.center_lat, self.center_lon, self.max_distance_miles);
+                                    // Record position update for sparkline tracking
+                                    if updated {
+                                        if let Some(ref status) = self.status {
+                                            status.lock().unwrap().record_position_update();
+                                        }
+                                    }
                                 }
                             }
                         }

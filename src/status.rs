@@ -54,6 +54,10 @@ pub struct SystemStatus {
     pub messages_per_second: f64,
     pub messages_last_second: VecDeque<(DateTime<Utc>, u64)>, // Ring buffer for rate calculation
 
+    // Position update statistics (for sparkline visualization)
+    pub position_updates_per_second: f64,
+    pub position_updates_history: VecDeque<(DateTime<Utc>, u32)>, // Last 60 seconds of position update counts
+
     // Aircraft statistics
     pub total_aircraft_tracked: usize,
     pub active_aircraft: usize,
@@ -95,6 +99,9 @@ impl SystemStatus {
             total_messages_received: 0,
             messages_per_second: 0.0,
             messages_last_second: VecDeque::with_capacity(60),
+
+            position_updates_per_second: 0.0,
+            position_updates_history: VecDeque::with_capacity(60),
 
             total_aircraft_tracked: 0,
             active_aircraft: 0,
@@ -176,6 +183,51 @@ impl SystemStatus {
                     self.messages_per_second = message_diff / duration_secs;
                 }
             }
+        }
+    }
+
+    /// Record a position update for sparkline visualization
+    pub fn record_position_update(&mut self) {
+        let now = Utc::now();
+
+        // Find or create entry for the current second
+        if let Some((last_time, count)) = self.position_updates_history.back_mut() {
+            // If the last entry is from the same second, increment its count
+            if (now - *last_time).num_milliseconds() < 1000 {
+                *count += 1;
+            } else {
+                // New second - add a new entry
+                self.position_updates_history.push_back((now, 1));
+            }
+        } else {
+            // First entry
+            self.position_updates_history.push_back((now, 1));
+        }
+
+        // Remove entries older than 60 seconds
+        while let Some((timestamp, _)) = self.position_updates_history.front() {
+            if (now - *timestamp).num_seconds() > 60 {
+                self.position_updates_history.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        // Calculate average position updates per second over the last 10 seconds
+        let ten_secs_ago = now - chrono::Duration::seconds(10);
+        let recent_updates: u32 = self.position_updates_history
+            .iter()
+            .filter(|(timestamp, _)| *timestamp >= ten_secs_ago)
+            .map(|(_, count)| count)
+            .sum();
+
+        let recent_duration = self.position_updates_history
+            .iter()
+            .filter(|(timestamp, _)| *timestamp >= ten_secs_ago)
+            .count() as f64;
+
+        if recent_duration > 0.0 {
+            self.position_updates_per_second = recent_updates as f64 / recent_duration;
         }
     }
 

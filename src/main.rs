@@ -548,6 +548,9 @@ impl AdsbApp {
         let metadata_service = Arc::new(MetadataService::new());
         let photo_manager = PhotoTextureManager::new();
 
+        // Wire up status tracking in the tracker for position update sparkline
+        tracker.lock().unwrap().set_status(system_status.clone());
+
         // Use default location initially - will be updated during startup sequence
         let default_lat = 37.7749;
         let default_lon = -122.4194;

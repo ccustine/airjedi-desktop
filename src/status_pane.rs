@@ -235,6 +235,20 @@ impl StatusPane {
                 .monospace());
         });
 
+        // Position updates with sparkline
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Pos:")
+                .color(egui::Color32::from_rgb(130, 130, 130))
+                .size(9.0));
+            ui.label(egui::RichText::new(format!("{:.1}/s", status.position_updates_per_second))
+                .color(egui::Color32::from_rgb(100, 200, 200))
+                .size(9.0)
+                .monospace());
+
+            // Sparkline visualization
+            self.render_sparkline(ui, status);
+        });
+
         // Aircraft statistics
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Aircraft:")
@@ -246,6 +260,70 @@ impl StatusPane {
                 .size(9.0)
                 .monospace());
         });
+    }
+
+    fn render_sparkline(&self, ui: &mut egui::Ui, status: &SystemStatus) {
+        // Sparkline dimensions
+        let width = 120.0;
+        let height = 18.0;
+
+        // Allocate space for the sparkline
+        let (rect, _response) = ui.allocate_exact_size(
+            egui::vec2(width, height),
+            egui::Sense::hover()
+        );
+
+        let painter = ui.painter();
+
+        // Get position update history
+        let history = &status.position_updates_history;
+
+        if history.len() < 2 {
+            // Not enough data to draw
+            return;
+        }
+
+        // Find max value for scaling
+        let max_count = history.iter()
+            .map(|(_, count)| *count)
+            .max()
+            .unwrap_or(1) as f32;
+
+        // Avoid division by zero
+        let max_count = max_count.max(1.0);
+
+        // Draw the sparkline as a line graph
+        let points: Vec<egui::Pos2> = history
+            .iter()
+            .enumerate()
+            .map(|(i, (_, count))| {
+                let x = rect.min.x + (i as f32 / (history.len() - 1) as f32) * width;
+                let normalized = (*count as f32) / max_count;
+                let y = rect.max.y - (normalized * height);
+                egui::pos2(x, y)
+            })
+            .collect();
+
+        // Draw filled area under the line for better visibility
+        if points.len() >= 2 {
+            let mut filled_points = points.clone();
+            filled_points.push(egui::pos2(rect.max.x, rect.max.y));
+            filled_points.push(egui::pos2(rect.min.x, rect.max.y));
+
+            painter.add(egui::Shape::convex_polygon(
+                filled_points,
+                egui::Color32::from_rgba_unmultiplied(100, 200, 200, 40), // Translucent cyan fill
+                egui::Stroke::NONE,
+            ));
+        }
+
+        // Draw the line on top
+        if points.len() >= 2 {
+            painter.add(egui::Shape::line(
+                points,
+                egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 220, 220)) // Cyan line
+            ));
+        }
     }
 
     fn render_data_status_section(&self, ui: &mut egui::Ui, status: &SystemStatus) {
