@@ -469,6 +469,10 @@ struct AdsbApp {
     cached_bounds: Option<(f64, f64, f64, f64)>, // (min_lat, max_lat, min_lon, max_lon)
     last_bounds_zoom: f32,
     last_bounds_center: (f64, f64),
+    // Cached aviation data to avoid cloning thousands of objects every frame
+    cached_aviation_data: Option<(Vec<Airport>, Vec<(String, Vec<aviation_data::Runway>)>, Vec<Navaid>)>,
+    last_aviation_cache_bounds: Option<(f64, f64, f64, f64)>,
+    last_aviation_cache_filter: AirportFilter,
     // Hover popup state
     hovered_map_item: Option<HoveredMapItem>,
     // Aircraft metadata
@@ -576,6 +580,9 @@ impl AdsbApp {
             cached_bounds: None,
             last_bounds_zoom: 0.0,
             last_bounds_center: (0.0, 0.0),
+            cached_aviation_data: None,
+            last_aviation_cache_bounds: None,
+            last_aviation_cache_filter: AirportFilter::FrequentlyUsed,
             hovered_map_item: None,
             aircraft_db,
             metadata_service,
@@ -1069,33 +1076,57 @@ impl AdsbApp {
             self.cached_bounds.unwrap()
         };
 
-        // Clone aviation data early and release lock immediately
-        let (visible_airports, airport_runways, visible_navaids) = if let Ok(aviation_data) = self.aviation_data.lock() {
-            let airports: Vec<_> = aviation_data.get_airports_in_bounds(min_lat, max_lat, min_lon, max_lon)
-                .into_iter()
-                .cloned()
-                .collect();
+        // PERFORMANCE: Cache aviation data to avoid cloning thousands of objects every frame
+        // Only recalculate when bounds or filter settings change significantly
+        let cache_needs_update = self.cached_aviation_data.is_none()
+            || self.last_aviation_cache_bounds != Some((min_lat, max_lat, min_lon, max_lon))
+            || self.last_aviation_cache_filter != self.airport_filter;
 
-            // Get runways for all visible airports
-            let runways: Vec<(String, Vec<_>)> = airports.iter()
-                .map(|airport| {
-                    let airport_runways = aviation_data.get_runways_for_airport(&airport.icao)
-                        .into_iter()
-                        .cloned()
-                        .collect();
-                    (airport.icao.clone(), airport_runways)
-                })
-                .collect();
+        if cache_needs_update {
+            // Cache is stale - rebuild it by cloning from locked data
+            let cache_rebuild_start = std::time::Instant::now();
+            if let Ok(aviation_data) = self.aviation_data.lock() {
+                let airports: Vec<_> = aviation_data.get_airports_in_bounds(min_lat, max_lat, min_lon, max_lon)
+                    .into_iter()
+                    .cloned()
+                    .collect();
 
-            let navaids: Vec<_> = aviation_data.get_navaids_in_bounds(min_lat, max_lat, min_lon, max_lon)
-                .into_iter()
-                .cloned()
-                .collect();
+                // Get runways for all visible airports
+                let runways: Vec<(String, Vec<_>)> = airports.iter()
+                    .map(|airport| {
+                        let airport_runways = aviation_data.get_runways_for_airport(&airport.icao)
+                            .into_iter()
+                            .cloned()
+                            .collect();
+                        (airport.icao.clone(), airport_runways)
+                    })
+                    .collect();
 
+                let navaids: Vec<_> = aviation_data.get_navaids_in_bounds(min_lat, max_lat, min_lon, max_lon)
+                    .into_iter()
+                    .cloned()
+                    .collect();
+
+                // Update cache
+                self.cached_aviation_data = Some((airports.clone(), runways.clone(), navaids.clone()));
+                self.last_aviation_cache_bounds = Some((min_lat, max_lat, min_lon, max_lon));
+                self.last_aviation_cache_filter = self.airport_filter;
+
+                let cache_rebuild_time = cache_rebuild_start.elapsed().as_millis();
+                if cache_rebuild_time > 5 {
+                    println!("Aviation cache rebuilt: {} airports, {} runway groups, {} navaids in {}ms",
+                        airports.len(), runways.len(), navaids.len(), cache_rebuild_time);
+                }
+            } // Lock released here
+        }
+
+        // Use cached data (cheap reference, no cloning!)
+        let (visible_airports, airport_runways, visible_navaids) = if let Some((ref airports, ref runways, ref navaids)) = self.cached_aviation_data {
             (airports, runways, navaids)
         } else {
-            (Vec::new(), Vec::new(), Vec::new())
-        }; // Lock released here
+            // Fallback to empty data if cache somehow failed
+            (&Vec::new(), &Vec::new(), &Vec::new())
+        };
 
         // Draw aviation overlays (now using cloned data, no lock held)
         // Runways (draw first, so they appear under airports)
@@ -1105,7 +1136,7 @@ impl AdsbApp {
             let max_runways = if self.map_zoom_level >= 11.0 { usize::MAX } else { 500 };
             let mut runways_drawn = 0;
 
-            for (_airport_icao, runways) in &airport_runways {
+            for (_airport_icao, runways) in airport_runways {
                 if runways_drawn >= max_runways {
                     break;
                 }
@@ -1239,7 +1270,7 @@ impl AdsbApp {
 
             let mut navaids_drawn = 0;
 
-            for navaid in &visible_navaids {
+            for navaid in visible_navaids {
                 if navaids_drawn >= max_navaids {
                     break;
                 }

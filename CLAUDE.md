@@ -41,7 +41,9 @@ The application will automatically:
 - Airport filtering UI with 3 modes (FrequentlyUsed, All, MajorOnly)
 - Background aviation data loading with progress indicator
 - Spatial bounding box calculation for viewport-based filtering
-- Generic hover popup system with `MapItemPopup` trait (airports, navaids)
+- **Performance: Cached aviation data filtering** - Only recalculates when bounds/filter changes
+- **Performance: Cached spatial bounds** - Reduces per-frame calculations
+- Generic hover popup system with `MapItemPopup` trait (airports, navaids, aircraft)
 - Constants: `TRAIL_MAX_AGE_SECONDS` (300s), `TRAIL_SOLID_DURATION_SECONDS` (225s), `TRAIL_FADE_DURATION_SECONDS` (75s)
 
 **src/basestation.rs** - Core aircraft tracking logic
