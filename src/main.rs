@@ -1093,8 +1093,20 @@ impl AdsbApp {
 
         // PERFORMANCE: Cache aviation data to avoid cloning thousands of objects every frame
         // Only recalculate when bounds or filter settings change significantly
+        // Check if bounds have changed enough to warrant a cache rebuild (10% of viewport)
+        let bounds_changed_significantly = if let Some((last_min_lat, last_max_lat, last_min_lon, last_max_lon)) = self.last_aviation_cache_bounds {
+            let lat_threshold = (last_max_lat - last_min_lat) * 0.1;
+            let lon_threshold = (last_max_lon - last_min_lon) * 0.1;
+            (min_lat - last_min_lat).abs() > lat_threshold
+                || (max_lat - last_max_lat).abs() > lat_threshold
+                || (min_lon - last_min_lon).abs() > lon_threshold
+                || (max_lon - last_max_lon).abs() > lon_threshold
+        } else {
+            true  // No previous bounds, need to build cache
+        };
+
         let cache_needs_update = self.cached_aviation_data.is_none()
-            || self.last_aviation_cache_bounds != Some((min_lat, max_lat, min_lon, max_lon))
+            || bounds_changed_significantly
             || self.last_aviation_cache_filter != self.airport_filter;
 
         if cache_needs_update {
