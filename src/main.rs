@@ -345,7 +345,12 @@ impl MapItemPopup for Aircraft {
                     ui.label(egui::RichText::new("▲")
                         .color(alt_color)
                         .size(10.0));
-                    ui.label(egui::RichText::new(format!("{} ft  (FL{:03})", alt, alt / 100))
+                    let alt_text = if alt >= 18000 {
+                        format!("FL{:03}", alt / 100)
+                    } else {
+                        format!("{} ft", alt)
+                    };
+                    ui.label(egui::RichText::new(alt_text)
                         .color(alt_color)
                         .size(10.0)
                         .monospace());
@@ -777,7 +782,12 @@ impl AdsbApp {
                                     // Altitude indicator on the right
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         if let Some(alt) = aircraft.altitude() {
-                                            ui.label(egui::RichText::new(format!("{} FL{:03}", alt_indicator, alt / 100))
+                                            let alt_text = if alt >= 18000 {
+                                                format!("{} FL{:03}", alt_indicator, alt / 100)
+                                            } else {
+                                                format!("{} {} ft", alt_indicator, alt)
+                                            };
+                                            ui.label(egui::RichText::new(alt_text)
                                                 .color(alt_color)
                                                 .size(10.0)
                                                 .monospace());
@@ -1536,7 +1546,11 @@ impl AdsbApp {
 
                     // Draw altitude below callsign
                     if let Some(alt) = aircraft.altitude() {
-                        let alt_text = format!("{}ft", alt);
+                        let alt_text = if alt >= 18000 {
+                            format!("FL{:03}", alt / 100)
+                        } else {
+                            format!("{}ft", alt)
+                        };
                         let text_pos = pos + egui::vec2(10.0, label_offset_y);
 
                         // Create a text galley to measure the text size

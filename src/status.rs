@@ -51,8 +51,6 @@ pub struct SystemStatus {
 
     // Message statistics
     pub total_messages_received: u64,
-    pub messages_per_second: f64,
-    pub messages_last_second: VecDeque<(DateTime<Utc>, u64)>, // Ring buffer for rate calculation
 
     // Position update statistics (for sparkline visualization)
     pub position_updates_per_second: f64,
@@ -97,8 +95,6 @@ impl SystemStatus {
             connection_uptime_seconds: 0,
 
             total_messages_received: 0,
-            messages_per_second: 0.0,
-            messages_last_second: VecDeque::with_capacity(60),
 
             position_updates_per_second: 0.0,
             position_updates_history: VecDeque::with_capacity(60),
@@ -156,34 +152,9 @@ impl SystemStatus {
             format!("Connection error: {}", error));
     }
 
-    /// Increment message counter and update rate
+    /// Increment message counter
     pub fn increment_message_count(&mut self) {
         self.total_messages_received += 1;
-
-        // Update messages per second calculation
-        let now = Utc::now();
-        self.messages_last_second.push_back((now, self.total_messages_received));
-
-        // Remove entries older than 1 second
-        while let Some((timestamp, _)) = self.messages_last_second.front() {
-            if (now - *timestamp).num_milliseconds() > 1000 {
-                self.messages_last_second.pop_front();
-            } else {
-                break;
-            }
-        }
-
-        // Calculate messages per second
-        if self.messages_last_second.len() >= 2 {
-            if let (Some((oldest_time, oldest_count)), Some((newest_time, newest_count))) =
-                (self.messages_last_second.front(), self.messages_last_second.back()) {
-                let duration_secs = (newest_time.timestamp_millis() - oldest_time.timestamp_millis()) as f64 / 1000.0;
-                if duration_secs > 0.0 {
-                    let message_diff = newest_count.saturating_sub(*oldest_count) as f64;
-                    self.messages_per_second = message_diff / duration_secs;
-                }
-            }
-        }
     }
 
     /// Record a position update for sparkline visualization

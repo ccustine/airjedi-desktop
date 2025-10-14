@@ -203,27 +203,6 @@ impl StatusPane {
 
         ui.add_space(3.0);
 
-        // Messages per second (highlighted metric)
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Rate:")
-                .color(egui::Color32::from_rgb(130, 130, 130))
-                .size(9.0));
-
-            let rate_color = if status.messages_per_second > 50.0 {
-                egui::Color32::from_rgb(100, 255, 100) // Green for high rate
-            } else if status.messages_per_second > 10.0 {
-                egui::Color32::from_rgb(255, 200, 100) // Yellow for medium rate
-            } else {
-                egui::Color32::from_rgb(150, 150, 150) // Gray for low rate
-            };
-
-            ui.label(egui::RichText::new(format!("{:.1} msg/s", status.messages_per_second))
-                .color(rate_color)
-                .size(11.0)
-                .monospace()
-                .strong());
-        });
-
         // Total messages
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Total:")
