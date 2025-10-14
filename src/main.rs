@@ -909,15 +909,19 @@ impl AdsbApp {
 
             // Calculate cursor position in map coordinates before zoom
             let old_zoom_level = self.map_zoom_level;
-            let old_tile_zoom = old_zoom_level.floor() as u8;
+            let old_tile_zoom = old_zoom_level.round() as u8;
 
             // Calculate cursor offset from center in pixels
             let cursor_offset_x = (cursor_pos.x - center.x) as f64;
             let cursor_offset_y = (cursor_pos.y - center.y) as f64;
 
-            // Convert to tile coordinates
-            let cursor_tile_offset_x = cursor_offset_x / tile_pixel_size as f64;
-            let cursor_tile_offset_y = cursor_offset_y / tile_pixel_size as f64;
+            // Calculate old scale factor for accurate pixel-to-tile conversion
+            let old_zoom_fraction = old_zoom_level - old_tile_zoom as f32;
+            let old_scale_factor = 2.0_f64.powf(old_zoom_fraction as f64);
+
+            // Convert to tile coordinates (accounting for current scale factor)
+            let cursor_tile_offset_x = cursor_offset_x / (tile_pixel_size as f64 * old_scale_factor);
+            let cursor_tile_offset_y = cursor_offset_y / (tile_pixel_size as f64 * old_scale_factor);
 
             // Get lat/lon at cursor position before zoom
             let cursor_tile_x = WebMercator::lon_to_x(self.map_center_lon, old_tile_zoom) + cursor_tile_offset_x;
@@ -931,15 +935,23 @@ impl AdsbApp {
             self.map_zoom_level = self.map_zoom_level.clamp(6.0, 12.0);
 
             // Calculate new tile zoom level
-            let new_tile_zoom = self.map_zoom_level.floor() as u8;
+            let new_tile_zoom = self.map_zoom_level.round() as u8;
+
+            // Calculate new scale factor for accurate pixel-to-tile conversion
+            let new_zoom_fraction = self.map_zoom_level - new_tile_zoom as f32;
+            let new_scale_factor = 2.0_f64.powf(new_zoom_fraction as f64);
 
             // Calculate where cursor should be in new zoom level
             let new_cursor_tile_x = WebMercator::lon_to_x(cursor_lon, new_tile_zoom);
             let new_cursor_tile_y = WebMercator::lat_to_y(cursor_lat, new_tile_zoom);
 
+            // Recalculate cursor tile offset with new scale factor
+            let new_cursor_tile_offset_x = cursor_offset_x / (tile_pixel_size as f64 * new_scale_factor);
+            let new_cursor_tile_offset_y = cursor_offset_y / (tile_pixel_size as f64 * new_scale_factor);
+
             // Adjust map center so cursor stays at same screen position
-            let new_center_tile_x = new_cursor_tile_x - cursor_tile_offset_x;
-            let new_center_tile_y = new_cursor_tile_y - cursor_tile_offset_y;
+            let new_center_tile_x = new_cursor_tile_x - new_cursor_tile_offset_x;
+            let new_center_tile_y = new_cursor_tile_y - new_cursor_tile_offset_y;
 
             self.map_center_lat = tiles::WebMercator::tile_to_lat(new_center_tile_y, new_tile_zoom);
             self.map_center_lon = tiles::WebMercator::tile_to_lon(new_center_tile_x, new_tile_zoom);

@@ -304,20 +304,7 @@ impl StatusPane {
             })
             .collect();
 
-        // Draw filled area under the line for better visibility
-        if points.len() >= 2 {
-            let mut filled_points = points.clone();
-            filled_points.push(egui::pos2(rect.max.x, rect.max.y));
-            filled_points.push(egui::pos2(rect.min.x, rect.max.y));
-
-            painter.add(egui::Shape::convex_polygon(
-                filled_points,
-                egui::Color32::from_rgba_unmultiplied(100, 200, 200, 40), // Translucent cyan fill
-                egui::Stroke::NONE,
-            ));
-        }
-
-        // Draw the line on top
+        // Draw the line
         if points.len() >= 2 {
             painter.add(egui::Shape::line(
                 points,
