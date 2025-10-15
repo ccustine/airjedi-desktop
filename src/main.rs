@@ -501,6 +501,59 @@ enum AirportFilter {
 }
 
 impl AdsbApp {
+    // Draw an airplane icon at the given position with rotation based on track angle
+    fn draw_aircraft_icon(
+        painter: &egui::Painter,
+        pos: egui::Pos2,
+        track_degrees: f32,
+        color: egui::Color32,
+        size: f32,
+    ) {
+        // Define airplane shape vertices relative to center (pointing north/up by default)
+        // Vertices in (x, y) format where y is negative for forward
+        let base_vertices = [
+            (0.0, -1.5),      // Nose (front)
+            (-0.3, -0.5),     // Left side of fuselage
+            (-1.0, 0.0),      // Left wing tip
+            (-0.3, 0.2),      // Left wing back
+            (-0.4, 0.8),      // Left tail
+            (-0.2, 0.9),      // Left tail inner
+            (0.0, 0.7),       // Center tail
+            (0.2, 0.9),       // Right tail inner
+            (0.4, 0.8),       // Right tail
+            (0.3, 0.2),       // Right wing back
+            (1.0, 0.0),       // Right wing tip
+            (0.3, -0.5),      // Right side of fuselage
+        ];
+
+        // Convert track to radians (track is in degrees, 0 = north)
+        let angle = track_degrees.to_radians();
+        let cos_a = angle.cos();
+        let sin_a = angle.sin();
+
+        // Rotate and scale vertices, then translate to position
+        let points: Vec<egui::Pos2> = base_vertices
+            .iter()
+            .map(|(x, y)| {
+                // Scale
+                let sx = x * size;
+                let sy = y * size;
+                // Rotate
+                let rx = sx * cos_a - sy * sin_a;
+                let ry = sx * sin_a + sy * cos_a;
+                // Translate to position
+                egui::pos2(pos.x + rx, pos.y + ry)
+            })
+            .collect();
+
+        // Draw filled airplane shape with no outline
+        painter.add(egui::Shape::convex_polygon(
+            points,
+            color,
+            egui::Stroke::NONE,
+        ));
+    }
+
     // Convert altitude to continuous color gradient
     // Low altitude (cyan) -> High altitude (purple) with smooth blending
     fn altitude_to_color(altitude_ft: Option<i32>) -> (u8, u8, u8) {
@@ -1479,31 +1532,24 @@ impl AdsbApp {
                     let icao = aircraft.icao();
                     let is_selected = self.selected_aircraft.as_ref() == Some(&icao);
 
-                    // Draw aircraft as a circle with selection feedback
-                    let (color, radius) = if is_selected {
-                        (egui::Color32::from_rgb(255, 100, 100), 7.0) // Larger red circle when selected
+                    // Draw aircraft as an airplane icon with selection feedback
+                    let (color, size) = if is_selected {
+                        (egui::Color32::from_rgb(255, 100, 100), 7.0) // Larger red airplane when selected
                     } else {
                         (egui::Color32::from_rgb(120, 220, 120), 5.0) // Normal green
                     };
 
-                    painter.circle_filled(pos, radius, color);
+                    // Draw airplane icon pointing in direction of travel
+                    let track = aircraft.track().unwrap_or(0.0) as f32;
+                    Self::draw_aircraft_icon(&painter, pos, track, color, size);
 
                     // Add selection ring
                     if is_selected {
                         painter.circle_stroke(
                             pos,
-                            radius + 3.0,
+                            size * 1.8,
                             egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 50)),
                         );
-                    }
-
-                    // Draw heading indicator
-                    if let Some(track) = aircraft.track() {
-                        let angle = track.to_radians();
-                        let dx = angle.sin() as f32 * 15.0;
-                        let dy = -angle.cos() as f32 * 15.0;
-                        let end_pos = pos + egui::vec2(dx, dy);
-                        painter.line_segment([pos, end_pos], egui::Stroke::new(2.0, color));
                     }
 
                     // Draw callsign and altitude labels to the right of the aircraft icon
@@ -1585,7 +1631,7 @@ impl AdsbApp {
                     // Check for hover
                     if let Some(hover_pos) = response.hover_pos() {
                         let distance = hover_pos.distance(pos);
-                        let hover_radius = radius + 10.0; // Add margin for easier hovering
+                        let hover_radius = size * 1.8 + 5.0; // Size of airplane + margin for easier hovering
                         if distance <= hover_radius {
                             self.hovered_map_item = Some(HoveredMapItem::Aircraft(aircraft.clone()));
                             // Also select the aircraft and trigger auto-scroll in the list
