@@ -234,6 +234,7 @@ pub struct AircraftTracker {
     center_lon: f64,
     max_distance_miles: f64,
     status: Option<Arc<Mutex<SystemStatus>>>,
+    time_limited_trails: bool,
 }
 
 impl Default for AircraftTracker {
@@ -250,6 +251,7 @@ impl AircraftTracker {
             center_lon: 0.0,
             max_distance_miles: 400.0,
             status: None,
+            time_limited_trails: false,  // Default to full history trails
         }
     }
 
@@ -260,6 +262,14 @@ impl AircraftTracker {
     pub fn set_center(&mut self, lat: f64, lon: f64) {
         self.center_lat = lat;
         self.center_lon = lon;
+    }
+
+    pub fn set_time_limited_trails(&mut self, enabled: bool) {
+        self.time_limited_trails = enabled;
+    }
+
+    pub fn get_time_limited_trails(&self) -> bool {
+        self.time_limited_trails
     }
 
     /// Get all aircraft - returns cheap Arc clones
@@ -275,9 +285,11 @@ impl AircraftTracker {
     pub fn cleanup_old(&mut self, max_age_seconds: i64) {
         let now = Utc::now();
 
-        // Clean up old position history for all aircraft
-        for aircraft in self.aircraft.values() {
-            aircraft.cleanup_old_history(300); // Keep 5 minutes of history
+        // Clean up old position history only if time-limited trails are enabled
+        if self.time_limited_trails {
+            for aircraft in self.aircraft.values() {
+                aircraft.cleanup_old_history(300); // Keep 5 minutes of history
+            }
         }
 
         // Remove aircraft that haven't been seen recently

@@ -469,6 +469,7 @@ struct AdsbApp {
     show_airports: bool,
     show_runways: bool,
     show_navaids: bool,
+    time_limited_trails: bool,
     airport_filter: AirportFilter,
     // Cached bounding box for spatial filtering
     cached_bounds: Option<(f64, f64, f64, f64)>, // (min_lat, max_lat, min_lon, max_lon)
@@ -637,6 +638,7 @@ impl AdsbApp {
             show_airports: true,
             show_runways: true,
             show_navaids: false, // Off by default since there are many navaids
+            time_limited_trails: false, // Off by default - show full history trails
             airport_filter: AirportFilter::FrequentlyUsed, // Default to frequently used
             cached_bounds: None,
             last_bounds_zoom: 0.0,
@@ -1418,8 +1420,8 @@ impl AdsbApp {
         };
 
         // PERFORMANCE: Trail rendering with aggressive LOD optimization
-        // When zoomed out, trails are microscopic and expensive to render
-        let should_draw_trails = self.map_zoom_level >= 8.0;
+        // LOD system reduces point count when zoomed out for performance
+        let should_draw_trails = true;  // Always show trails regardless of zoom level
         let trail_detail_level = if self.map_zoom_level >= 10.0 {
             1  // Full detail: render every point
         } else if self.map_zoom_level >= 9.0 {
@@ -1427,6 +1429,9 @@ impl AdsbApp {
         } else {
             4  // Low detail: render every 4th point
         };
+
+        // Get time-limited trails setting once to avoid repeated locking
+        let time_limited_trails = self.tracker.lock().unwrap().get_time_limited_trails();
 
         for aircraft in &aircraft_list {
             // Draw trail first (so aircraft appears on top)
@@ -1460,18 +1465,22 @@ impl AdsbApp {
                     let point = &data.position_history[i];
                     let age = (now - point.timestamp).num_milliseconds() as f32 / 1000.0;
 
-                    // Only draw if age is within trail duration
-                    if age > TRAIL_MAX_AGE_SECONDS {
+                    // Only draw if age is within trail duration (when time-limited trails enabled)
+                    if time_limited_trails && age > TRAIL_MAX_AGE_SECONDS {
                         continue;
                     }
 
-                    // Calculate opacity based on age
-                    let alpha = if age <= TRAIL_SOLID_DURATION_SECONDS {
-                        255 // Solid for first half
+                    // Calculate opacity based on age (only when time-limited trails enabled)
+                    let alpha = if time_limited_trails {
+                        if age <= TRAIL_SOLID_DURATION_SECONDS {
+                            255 // Solid for first half
+                        } else {
+                            let fade_age = age - TRAIL_SOLID_DURATION_SECONDS;
+                            let opacity = (1.0 - (fade_age / TRAIL_FADE_DURATION_SECONDS)).clamp(0.0, 1.0);
+                            (opacity * 255.0) as u8
+                        }
                     } else {
-                        let fade_age = age - TRAIL_SOLID_DURATION_SECONDS;
-                        let opacity = (1.0 - (fade_age / TRAIL_FADE_DURATION_SECONDS)).clamp(0.0, 1.0);
-                        (opacity * 255.0) as u8
+                        255 // Full opacity for unlimited trails
                     };
 
                     let trail_pos = to_screen(point.lat, point.lon);
@@ -1482,8 +1491,8 @@ impl AdsbApp {
                         let next_point = &data.position_history[next_idx];
                         let next_age = (now - next_point.timestamp).num_milliseconds() as f32 / 1000.0;
 
-                        // Only draw if next point is also within trail duration
-                        if next_age <= TRAIL_MAX_AGE_SECONDS {
+                        // Only draw if next point is also within trail duration (when time-limited)
+                        if !time_limited_trails || next_age <= TRAIL_MAX_AGE_SECONDS {
                             let next_pos = to_screen(next_point.lat, next_point.lon);
 
                             // Get altitude-based color
@@ -2069,6 +2078,13 @@ impl eframe::App for AdsbApp {
                     ui.horizontal(|ui| {
                         ui.label("Navaids:");
                         ui.checkbox(&mut self.show_navaids, "");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Time-Limited Trails:");
+                        if ui.checkbox(&mut self.time_limited_trails, "").changed() {
+                            // Sync checkbox state to tracker
+                            self.tracker.lock().unwrap().set_time_limited_trails(self.time_limited_trails);
+                        }
                     });
                     ui.separator();
 
