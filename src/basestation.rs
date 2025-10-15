@@ -54,6 +54,7 @@ pub struct AircraftData {
     pub vertical_rate: Option<i32>,
     pub last_seen: DateTime<Utc>,
     pub position_history: Vec<PositionPoint>,
+    pub consecutive_rejections: u32,
     // Metadata fields
     pub registration: Option<String>,
     pub aircraft_type: Option<String>,
@@ -83,6 +84,7 @@ impl Aircraft {
                 vertical_rate: None,
                 last_seen: Utc::now(),
                 position_history: Vec::new(),
+                consecutive_rejections: 0,
                 registration: None,
                 aircraft_type: None,
                 photo_url: None,
@@ -185,14 +187,30 @@ impl Aircraft {
             return false; // Position rejected - too far from center
         }
 
-        // Check if position is within 10 miles of previous position
+        // Check if position is within 10 miles of previous position (only if recent update)
         if let (Some(last_lat), Some(last_lon)) = (data.latitude, data.longitude) {
-            let distance_from_last = haversine_distance(last_lat, last_lon, lat, lon);
-            if distance_from_last > 10.0 {
-                // Position jump too large - reject
-                println!("Rejected position for {}: jumped {:.1} miles (max 10 miles allowed)",
-                    data.icao, distance_from_last);
-                return false;
+            let time_since_last_update = (Utc::now() - data.last_seen).num_seconds();
+
+            // Only apply jump detection if last update was within 20 seconds
+            // This prevents false rejections after connectivity gaps
+            if time_since_last_update <= 20 {
+                let distance_from_last = haversine_distance(last_lat, last_lon, lat, lon);
+                if distance_from_last > 10.0 {
+                    // Check if we've already rejected 3+ times in a row
+                    // If so, assume the data is actually correct (likely a delay/gap)
+                    if data.consecutive_rejections >= 3 {
+                        println!("Accepting position for {} after {} consecutive rejections (jumped {:.1} miles)",
+                            data.icao, data.consecutive_rejections, distance_from_last);
+                        data.consecutive_rejections = 0;
+                        // Continue with position update
+                    } else {
+                        // Position jump too large - reject and increment counter
+                        data.consecutive_rejections += 1;
+                        println!("Rejected position for {}: jumped {:.1} miles (rejection {} of 3)",
+                            data.icao, distance_from_last, data.consecutive_rejections);
+                        return false;
+                    }
+                }
             }
         }
 
@@ -216,6 +234,10 @@ impl Aircraft {
 
         data.latitude = Some(lat);
         data.longitude = Some(lon);
+
+        // Reset rejection counter on successful position update
+        data.consecutive_rejections = 0;
+
         true
     }
 
