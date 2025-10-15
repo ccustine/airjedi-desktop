@@ -14,10 +14,15 @@
 
 use egui;
 use crate::status::{SystemStatus, ConnectionStatus, DiagnosticLevel};
+use std::time::Instant;
 
 pub struct StatusPane {
     pub visible: bool,
     pub collapsed: bool,
+    // Sparkline cache to avoid recalculating on every frame
+    last_sparkline_update: Instant,
+    cached_sparkline_points: Vec<egui::Pos2>,
+    cached_sparkline_max: f32,
 }
 
 impl StatusPane {
@@ -25,6 +30,9 @@ impl StatusPane {
         Self {
             visible: true,
             collapsed: false,
+            last_sparkline_update: Instant::now(),
+            cached_sparkline_points: Vec::new(),
+            cached_sparkline_max: 1.0,
         }
     }
 
@@ -195,7 +203,7 @@ impl StatusPane {
         }
     }
 
-    fn render_metrics_section(&self, ui: &mut egui::Ui, status: &SystemStatus) {
+    fn render_metrics_section(&mut self, ui: &mut egui::Ui, status: &SystemStatus) {
         ui.label(egui::RichText::new("METRICS")
             .color(egui::Color32::from_rgb(150, 150, 150))
             .size(10.0)
@@ -223,8 +231,10 @@ impl StatusPane {
                 .color(egui::Color32::from_rgb(100, 200, 200))
                 .size(9.0)
                 .monospace());
+        });
 
-            // Sparkline visualization
+        // Sparkline visualization (outside of horizontal to allow mutable access)
+        ui.horizontal(|ui| {
             self.render_sparkline(ui, status);
         });
 
@@ -241,7 +251,7 @@ impl StatusPane {
         });
     }
 
-    fn render_sparkline(&self, ui: &mut egui::Ui, status: &SystemStatus) {
+    fn render_sparkline(&mut self, ui: &mut egui::Ui, status: &SystemStatus) {
         // Sparkline dimensions
         let width = 120.0;
         let height = 18.0;
@@ -257,36 +267,67 @@ impl StatusPane {
         // Get position update history
         let history = &status.position_updates_history;
 
-        if history.len() < 2 {
+        // Need at least 3 points: 2 stable points to draw a line, plus 1 current point we'll exclude
+        if history.len() < 3 {
             // Not enough data to draw
             return;
         }
 
-        // Find max value for scaling
-        let max_count = history.iter()
-            .map(|(_, count)| *count)
-            .max()
-            .unwrap_or(1) as f32;
+        // Check if 1 second has elapsed since last update
+        let now = Instant::now();
+        let should_update = now.duration_since(self.last_sparkline_update).as_secs_f32() >= 1.0;
 
-        // Avoid division by zero
-        let max_count = max_count.max(1.0);
+        if should_update {
+            // Recalculate sparkline points (only once per second)
 
-        // Draw the sparkline as a line graph
-        let points: Vec<egui::Pos2> = history
-            .iter()
-            .enumerate()
-            .map(|(i, (_, count))| {
-                let x = rect.min.x + (i as f32 / (history.len() - 1) as f32) * width;
-                let normalized = (*count as f32) / max_count;
-                let y = rect.max.y - (normalized * height);
-                egui::pos2(x, y)
-            })
-            .collect();
+            // Find max value for scaling (use all points for consistent scale)
+            let max_count = history.iter()
+                .map(|(_, count)| *count)
+                .max()
+                .unwrap_or(1) as f32;
 
-        // Draw the line
-        if points.len() >= 2 {
+            // Avoid division by zero
+            self.cached_sparkline_max = max_count.max(1.0);
+
+            // Calculate points, EXCLUDING the last point (current second still accumulating)
+            // This prevents the graph from constantly repainting as the current second's count changes
+            let stable_count = history.len() - 1;
+
+            self.cached_sparkline_points = history
+                .iter()
+                .take(stable_count)  // Exclude the last point
+                .enumerate()
+                .map(|(i, (_, count))| {
+                    let x = rect.min.x + (i as f32 / (stable_count - 1).max(1) as f32) * width;
+                    let normalized = (*count as f32) / self.cached_sparkline_max;
+                    let y = rect.max.y - (normalized * height);
+                    egui::pos2(x, y)
+                })
+                .collect();
+
+            self.last_sparkline_update = now;
+        } else {
+            // Use cached points but adjust for current rect position
+            // (in case the window was moved or resized)
+            if !self.cached_sparkline_points.is_empty() {
+                self.cached_sparkline_points = self.cached_sparkline_points
+                    .iter()
+                    .enumerate()
+                    .map(|(i, old_point)| {
+                        // Recalculate with current rect, but use cached normalized values
+                        let x = rect.min.x + (i as f32 / (self.cached_sparkline_points.len() - 1).max(1) as f32) * width;
+                        let normalized = (rect.max.y - old_point.y) / height;
+                        let y = rect.max.y - (normalized * height);
+                        egui::pos2(x, y)
+                    })
+                    .collect();
+            }
+        }
+
+        // Draw the line using cached points
+        if self.cached_sparkline_points.len() >= 2 {
             painter.add(egui::Shape::line(
-                points,
+                self.cached_sparkline_points.clone(),
                 egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 220, 220)) // Cyan line
             ));
         }
