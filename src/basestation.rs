@@ -33,6 +33,13 @@ fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     r * c
 }
 
+// Calculate distance in nautical miles between two lat/lon points
+pub fn haversine_distance_nm(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let statute_miles = haversine_distance(lat1, lon1, lat2, lon2);
+    // Convert statute miles to nautical miles (1 nm = 1.15078 statute miles)
+    statute_miles / 1.15078
+}
+
 #[derive(Debug, Clone)]
 pub struct PositionPoint {
     pub lat: f64,
@@ -158,6 +165,16 @@ impl Aircraft {
 
     pub fn position_history(&self) -> Vec<PositionPoint> {
         self.inner.read().unwrap().position_history.clone()
+    }
+
+    /// Calculate distance in nautical miles from a given point to this aircraft
+    pub fn distance_from_nm(&self, from_lat: f64, from_lon: f64) -> Option<f64> {
+        let data = self.inner.read().unwrap();
+        if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
+            Some(haversine_distance_nm(from_lat, from_lon, lat, lon))
+        } else {
+            None
+        }
     }
 
     // Method to execute a read closure with locked data

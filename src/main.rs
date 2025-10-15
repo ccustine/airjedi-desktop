@@ -166,7 +166,7 @@ fn main() -> Result<(), eframe::Error> {
 
 // Generic trait for map items that can show hover popups
 trait MapItemPopup {
-    fn render_popup(&self, ui: &mut egui::Ui);
+    fn render_popup(&self, ui: &mut egui::Ui, receiver_lat: f64, receiver_lon: f64);
 }
 
 // Enum to hold any hovered map item (extensible for future items)
@@ -179,7 +179,7 @@ enum HoveredMapItem {
 
 // Implement popup rendering for Airport
 impl MapItemPopup for Airport {
-    fn render_popup(&self, ui: &mut egui::Ui) {
+    fn render_popup(&self, ui: &mut egui::Ui, _receiver_lat: f64, _receiver_lon: f64) {
         ui.set_min_width(200.0);
 
         // ICAO header with color based on airport type
@@ -256,7 +256,7 @@ impl MapItemPopup for Airport {
 
 // Implement popup rendering for Navaid
 impl MapItemPopup for Navaid {
-    fn render_popup(&self, ui: &mut egui::Ui) {
+    fn render_popup(&self, ui: &mut egui::Ui, _receiver_lat: f64, _receiver_lon: f64) {
         ui.set_min_width(180.0);
 
         // Ident header with color based on navaid type
@@ -309,8 +309,11 @@ impl MapItemPopup for Navaid {
 
 // Implement popup rendering for Aircraft
 impl MapItemPopup for Aircraft {
-    fn render_popup(&self, ui: &mut egui::Ui) {
+    fn render_popup(&self, ui: &mut egui::Ui, receiver_lat: f64, receiver_lon: f64) {
         ui.set_min_width(220.0);
+
+        // Calculate range from receiver
+        let range_nm = self.distance_from_nm(receiver_lat, receiver_lon);
 
         self.with_data(|data| {
             // Callsign or ICAO as header
@@ -417,6 +420,19 @@ impl MapItemPopup for Aircraft {
             }
 
             ui.add_space(2.0);
+
+            // Range from receiver
+            if let Some(range) = range_nm {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Range:")
+                        .color(egui::Color32::from_rgb(150, 150, 150))
+                        .size(9.0));
+                    ui.label(egui::RichText::new(format!("{:.1} nm", range))
+                        .color(egui::Color32::from_rgb(100, 200, 255))
+                        .size(9.0)
+                        .monospace());
+                });
+            }
 
             // Position coordinates
             if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
@@ -866,6 +882,14 @@ impl AdsbApp {
                                     if let Some(track) = aircraft.track() {
                                         ui.label(egui::RichText::new(format!("HDG {:03}°", track as i32))
                                             .color(egui::Color32::from_rgb(180, 180, 180))
+                                            .size(9.0)
+                                            .monospace());
+                                    }
+
+                                    // Range from receiver
+                                    if let Some(range) = aircraft.distance_from_nm(self.receiver_lat, self.receiver_lon) {
+                                        ui.label(egui::RichText::new(format!("RNG {:.1}", range))
+                                            .color(egui::Color32::from_rgb(100, 200, 255))
                                             .size(9.0)
                                             .monospace());
                                     }
@@ -1779,9 +1803,9 @@ impl AdsbApp {
                         egui::Frame::popup(ui.style())
                             .show(ui, |ui| {
                                 match hovered_item {
-                                    HoveredMapItem::Airport(airport) => airport.render_popup(ui),
-                                    HoveredMapItem::Navaid(navaid) => navaid.render_popup(ui),
-                                    HoveredMapItem::Aircraft(aircraft) => aircraft.render_popup(ui),
+                                    HoveredMapItem::Airport(airport) => airport.render_popup(ui, self.receiver_lat, self.receiver_lon),
+                                    HoveredMapItem::Navaid(navaid) => navaid.render_popup(ui, self.receiver_lat, self.receiver_lon),
+                                    HoveredMapItem::Aircraft(aircraft) => aircraft.render_popup(ui, self.receiver_lat, self.receiver_lon),
                                 }
                             });
                     });
