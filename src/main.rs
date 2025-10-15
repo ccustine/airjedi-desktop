@@ -1990,9 +1990,16 @@ impl eframe::App for AdsbApp {
                 let rect = ui.available_rect_before_wrap();
                 let painter = ui.painter();
 
-                // Create gradient from top (lighter) to bottom (darker)
-                let top_color = egui::Color32::from_rgba_unmultiplied(45, 50, 55, 61);    // Lighter top (24% opacity)
-                let bottom_color = egui::Color32::from_rgba_unmultiplied(20, 25, 30, 41); // Darker bottom (16% opacity)
+                // Layer 1: Solid background for clarity and separation from map
+                painter.rect_filled(
+                    rect,
+                    8.0,  // Corner radius matches window frame
+                    egui::Color32::from_rgba_unmultiplied(25, 30, 35, 153)  // 60% opacity dark background
+                );
+
+                // Layer 2: Gradient overlay for sheen effect (vivid with higher opacity and brightness)
+                let top_color = egui::Color32::from_rgba_unmultiplied(55, 64, 72, 179);     // Top (70% opacity, 15% less bright)
+                let bottom_color = egui::Color32::from_rgba_unmultiplied(15, 20, 25, 128); // Darker bottom (50% opacity)
 
                 // Draw gradient using mesh with vertices
                 let mut mesh = egui::epaint::Mesh::default();
