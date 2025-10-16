@@ -15,6 +15,7 @@
 mod aviation_data;
 mod aircraft_db;
 mod aircraft_metadata;
+mod aircraft_types;
 mod basestation;
 mod photo_cache;
 mod status;
@@ -23,6 +24,7 @@ mod tcp_client;
 mod tiles;
 
 use aircraft_db::AircraftDatabase;
+use aircraft_types::AircraftTypeDatabase;
 use aircraft_metadata::MetadataService;
 use aviation_data::{AviationData, Airport, Navaid};
 use basestation::{Aircraft, AircraftTracker};
@@ -166,7 +168,7 @@ fn main() -> Result<(), eframe::Error> {
 
 // Generic trait for map items that can show hover popups
 trait MapItemPopup {
-    fn render_popup(&self, ui: &mut egui::Ui, receiver_lat: f64, receiver_lon: f64);
+    fn render_popup(&self, ui: &mut egui::Ui, receiver_lat: f64, receiver_lon: f64, aircraft_types: &Arc<Mutex<AircraftTypeDatabase>>);
 }
 
 // Enum to hold any hovered map item (extensible for future items)
@@ -179,7 +181,7 @@ enum HoveredMapItem {
 
 // Implement popup rendering for Airport
 impl MapItemPopup for Airport {
-    fn render_popup(&self, ui: &mut egui::Ui, _receiver_lat: f64, _receiver_lon: f64) {
+    fn render_popup(&self, ui: &mut egui::Ui, _receiver_lat: f64, _receiver_lon: f64, _aircraft_types: &Arc<Mutex<AircraftTypeDatabase>>) {
         ui.set_min_width(200.0);
 
         // ICAO header with color based on airport type
@@ -256,7 +258,7 @@ impl MapItemPopup for Airport {
 
 // Implement popup rendering for Navaid
 impl MapItemPopup for Navaid {
-    fn render_popup(&self, ui: &mut egui::Ui, _receiver_lat: f64, _receiver_lon: f64) {
+    fn render_popup(&self, ui: &mut egui::Ui, _receiver_lat: f64, _receiver_lon: f64, _aircraft_types: &Arc<Mutex<AircraftTypeDatabase>>) {
         ui.set_min_width(180.0);
 
         // Ident header with color based on navaid type
@@ -309,7 +311,7 @@ impl MapItemPopup for Navaid {
 
 // Implement popup rendering for Aircraft
 impl MapItemPopup for Aircraft {
-    fn render_popup(&self, ui: &mut egui::Ui, receiver_lat: f64, receiver_lon: f64) {
+    fn render_popup(&self, ui: &mut egui::Ui, receiver_lat: f64, receiver_lon: f64, aircraft_types: &Arc<Mutex<AircraftTypeDatabase>>) {
         ui.set_min_width(220.0);
 
         // Calculate range from receiver
@@ -421,6 +423,27 @@ impl MapItemPopup for Aircraft {
 
             ui.add_space(2.0);
 
+            // Aircraft type
+            if let Some(ref aircraft_type) = data.aircraft_type {
+                // Lookup full aircraft type name from type database
+                let type_display = if let Ok(type_db) = aircraft_types.lock() {
+                    type_db.lookup(aircraft_type)
+                        .map(|s| s.clone())
+                        .unwrap_or_else(|| aircraft_type.clone())
+                } else {
+                    aircraft_type.clone()
+                };
+
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Type:")
+                        .color(egui::Color32::from_rgb(150, 150, 150))
+                        .size(9.0));
+                    ui.label(egui::RichText::new(&type_display)
+                        .color(egui::Color32::from_rgb(180, 150, 200))
+                        .size(9.0));
+                });
+            }
+
             // Range from receiver
             if let Some(range) = range_nm {
                 ui.horizontal(|ui| {
@@ -499,6 +522,7 @@ struct AdsbApp {
     hovered_map_item: Option<HoveredMapItem>,
     // Aircraft metadata
     aircraft_db: Arc<Mutex<AircraftDatabase>>,
+    aircraft_types: Arc<Mutex<AircraftTypeDatabase>>,
     metadata_service: Arc<MetadataService>,
     pending_metadata: Arc<Mutex<std::collections::HashSet<String>>>, // Track aircraft being fetched
     photo_manager: PhotoTextureManager,
@@ -620,8 +644,14 @@ impl AdsbApp {
         let aviation_data = Arc::new(Mutex::new(AviationData::new()));
         let aviation_data_loading = Arc::new(Mutex::new(true));
         let aircraft_db = Arc::new(Mutex::new(AircraftDatabase::new()));
+        let aircraft_types = Arc::new(Mutex::new(AircraftTypeDatabase::new()));
         let metadata_service = Arc::new(MetadataService::new());
         let photo_manager = PhotoTextureManager::new();
+
+        // Load aircraft type database from CSV file
+        if let Err(e) = aircraft_types.lock().unwrap().load_from_file("data/aircraft.csv") {
+            eprintln!("Warning: Failed to load aircraft types: {}", e);
+        }
 
         // Wire up status tracking in the tracker for position update sparkline
         tracker.lock().unwrap().set_status(system_status.clone());
@@ -664,6 +694,7 @@ impl AdsbApp {
             last_aviation_cache_filter: AirportFilter::FrequentlyUsed,
             hovered_map_item: None,
             aircraft_db,
+            aircraft_types,
             metadata_service,
             pending_metadata: Arc::new(Mutex::new(std::collections::HashSet::new())),
             photo_manager,
@@ -912,7 +943,16 @@ impl AdsbApp {
                                             .monospace());
                                     }
                                     if let Some(ref aircraft_type) = aircraft.aircraft_type() {
-                                        ui.label(egui::RichText::new(format!("TYPE: {}", aircraft_type))
+                                        // Lookup full aircraft type name from type database
+                                        let type_display = if let Ok(type_db) = self.aircraft_types.lock() {
+                                            type_db.lookup(aircraft_type)
+                                                .map(|s| s.clone())
+                                                .unwrap_or_else(|| aircraft_type.clone())
+                                        } else {
+                                            aircraft_type.clone()
+                                        };
+
+                                        ui.label(egui::RichText::new(format!("TYPE: {}", type_display))
                                             .color(egui::Color32::from_rgb(180, 150, 200))
                                             .size(8.5)
                                             .monospace());
@@ -1803,9 +1843,9 @@ impl AdsbApp {
                         egui::Frame::popup(ui.style())
                             .show(ui, |ui| {
                                 match hovered_item {
-                                    HoveredMapItem::Airport(airport) => airport.render_popup(ui, self.receiver_lat, self.receiver_lon),
-                                    HoveredMapItem::Navaid(navaid) => navaid.render_popup(ui, self.receiver_lat, self.receiver_lon),
-                                    HoveredMapItem::Aircraft(aircraft) => aircraft.render_popup(ui, self.receiver_lat, self.receiver_lon),
+                                    HoveredMapItem::Airport(airport) => airport.render_popup(ui, self.receiver_lat, self.receiver_lon, &self.aircraft_types),
+                                    HoveredMapItem::Navaid(navaid) => navaid.render_popup(ui, self.receiver_lat, self.receiver_lon, &self.aircraft_types),
+                                    HoveredMapItem::Aircraft(aircraft) => aircraft.render_popup(ui, self.receiver_lat, self.receiver_lon, &self.aircraft_types),
                                 }
                             });
                     });
