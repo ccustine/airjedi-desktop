@@ -1,2 +1,18 @@
 [build]
+# Native CPU optimization for local builds (macOS, etc.)
+# This will be automatically disabled when cross-compiling
 rustflags = ["-C", "target-cpu=native"]
+
+# Cross-compilation configuration for Raspberry Pi 5 (aarch64)
+[target.aarch64-unknown-linux-gnu]
+# When using `cross`, this linker config is handled by Docker
+# When using manual cross-compilation, specify your linker here:
+linker = "aarch64-unknown-linux-gnu-gcc"
+
+# Optimize for Raspberry Pi 5's Cortex-A76 CPU
+rustflags = ["-C", "target-cpu=cortex-a76"]
+
+# Musl cross-compilation for Raspberry Pi 5 (static linking)
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"
+rustflags = ["-C", "target-cpu=cortex-a76"]

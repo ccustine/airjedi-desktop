@@ -28,6 +28,7 @@ use aircraft_types::AircraftTypeDatabase;
 use aircraft_metadata::MetadataService;
 use aviation_data::{AviationData, Airport, Navaid};
 use basestation::{Aircraft, AircraftTracker};
+use clap::Parser;
 use eframe::egui;
 use photo_cache::PhotoTextureManager;
 use status::{SystemStatus, DiagnosticLevel};
@@ -40,6 +41,15 @@ use tiles::{TileManager, WebMercator};
 const TRAIL_MAX_AGE_SECONDS: f32 = 300.0;  // 5 minutes total
 const TRAIL_SOLID_DURATION_SECONDS: f32 = 225.0;  // First 75% solid (3.75 minutes)
 const TRAIL_FADE_DURATION_SECONDS: f32 = 75.0;  // Last 25% fade (1.25 minutes)
+
+/// AirJedi Desktop - Real-time ADS-B aircraft tracking application
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct CliArgs {
+    /// BaseStation/SBS-1 feed address
+    #[arg(short, long, default_value = "localhost:30003")]
+    server: String,
+}
 
 #[derive(Deserialize, Debug)]
 #[allow(dead_code)]
@@ -146,7 +156,11 @@ fn get_current_location() -> Option<(f64, f64)> {
 }
 
 fn main() -> Result<(), eframe::Error> {
+    // Parse command-line arguments
+    let args = CliArgs::parse();
+
     println!("Starting AirJedi Desktop...");
+    println!("Connecting to SBS-1 server at: {}", args.server);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -156,12 +170,13 @@ fn main() -> Result<(), eframe::Error> {
     };
 
     println!("Initializing window...");
+    let server_address = args.server.clone();
     eframe::run_native(
         "AirJedi Desktop",
         options,
-        Box::new(|_cc| {
+        Box::new(move |_cc| {
             println!("Creating application...");
-            Ok(Box::new(AdsbApp::new()))
+            Ok(Box::new(AdsbApp::new(server_address)))
         }),
     )
 }
@@ -532,6 +547,23 @@ struct AdsbApp {
     // Startup sequence tracking
     startup_state: StartupState,
     startup_frame_count: usize,
+    // Aircraft list filtering and sorting
+    sort_by: SortCriterion,
+    sort_direction: SortDirection,
+    filters_enabled: bool,
+    filter_altitude_min: f32,
+    filter_altitude_max: f32,
+    filter_speed_min: f32,
+    filter_speed_max: f32,
+    filter_range_min: f32,
+    filter_range_max: f32,
+    filter_registration: String,
+    filter_icao: String,
+    // Auto-pan to selected aircraft
+    stored_map_center: Option<(f64, f64)>, // (lat, lon) before auto-pan
+    following_aircraft: bool, // Whether we've auto-panned to an aircraft
+    // SBS-1 server configuration
+    server_address: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -539,6 +571,31 @@ enum AirportFilter {
     All,              // Show all airplane airports (large, medium, small)
     FrequentlyUsed,   // Show airports with scheduled service or large/medium
     MajorOnly,        // Show only large airports
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SortCriterion {
+    Range,      // Sort by distance from receiver
+    Speed,      // Sort by ground speed
+    Altitude,   // Sort by altitude
+}
+
+impl Default for SortCriterion {
+    fn default() -> Self {
+        SortCriterion::Altitude
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SortDirection {
+    Ascending,
+    Descending,
+}
+
+impl Default for SortDirection {
+    fn default() -> Self {
+        SortDirection::Descending
+    }
 }
 
 impl AdsbApp {
@@ -635,7 +692,7 @@ impl AdsbApp {
         (150, 50, 255)
     }
 
-    fn new() -> Self {
+    fn new(server_address: String) -> Self {
         println!("Initializing ADSB app...");
 
         // Initialize core structures
@@ -702,6 +759,22 @@ impl AdsbApp {
             status_pane: StatusPane::new(),
             startup_state: StartupState::InitializingWindow,
             startup_frame_count: 0,
+            // Initialize filtering and sorting with sensible defaults
+            sort_by: SortCriterion::default(),
+            sort_direction: SortDirection::default(),
+            filters_enabled: false,
+            filter_altitude_min: 0.0,
+            filter_altitude_max: 50000.0,
+            filter_speed_min: 0.0,
+            filter_speed_max: 600.0,
+            filter_range_min: 0.0,
+            filter_range_max: 400.0,
+            filter_registration: String::new(),
+            filter_icao: String::new(),
+            // Auto-pan state
+            stored_map_center: None,
+            following_aircraft: false,
+            server_address,
         }
     }
 
@@ -769,7 +842,7 @@ impl AdsbApp {
             tracker.get_aircraft()  // Returns Vec<Aircraft> where Aircraft is Arc<RwLock<...>>
         };
 
-        let count = aircraft_data.len();
+        let total_count = aircraft_data.len();
 
         // Military-style header
         ui.vertical(|ui| {
@@ -779,21 +852,248 @@ impl AdsbApp {
                     .size(14.0)
                     .strong());
             });
-
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!("TOTAL: {}", count))
-                    .color(egui::Color32::from_rgb(150, 150, 150))
-                    .size(10.0)
-                    .monospace());
-            });
         });
+
+        ui.add_space(2.0);
+
+        // Filters & Sort Controls
+        egui::CollapsingHeader::new(egui::RichText::new("⚙ FILTERS & SORT")
+            .color(egui::Color32::from_rgb(100, 200, 200))
+            .size(11.0)
+            .strong())
+            .default_open(false)
+            .show(ui, |ui| {
+                // Enable/Disable filters toggle
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.filters_enabled, "");
+                    ui.label(egui::RichText::new("Enable Filters")
+                        .color(egui::Color32::from_rgb(180, 180, 180))
+                        .size(10.0));
+                });
+
+                ui.add_space(4.0);
+
+                // Altitude filter
+                ui.label(egui::RichText::new("Altitude (ft)")
+                    .color(egui::Color32::from_rgb(150, 200, 200))
+                    .size(9.0));
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.filter_altitude_min, 0.0..=50000.0)
+                        .text("Min")
+                        .show_value(true));
+                });
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.filter_altitude_max, 0.0..=50000.0)
+                        .text("Max")
+                        .show_value(true));
+                });
+
+                ui.add_space(2.0);
+
+                // Speed filter
+                ui.label(egui::RichText::new("Speed (kts)")
+                    .color(egui::Color32::from_rgb(150, 200, 200))
+                    .size(9.0));
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.filter_speed_min, 0.0..=600.0)
+                        .text("Min")
+                        .show_value(true));
+                });
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.filter_speed_max, 0.0..=600.0)
+                        .text("Max")
+                        .show_value(true));
+                });
+
+                ui.add_space(2.0);
+
+                // Range filter
+                ui.label(egui::RichText::new("Range (nm)")
+                    .color(egui::Color32::from_rgb(150, 200, 200))
+                    .size(9.0));
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.filter_range_min, 0.0..=400.0)
+                        .text("Min")
+                        .show_value(true));
+                });
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.filter_range_max, 0.0..=400.0)
+                        .text("Max")
+                        .show_value(true));
+                });
+
+                ui.add_space(2.0);
+
+                // ICAO filter
+                ui.label(egui::RichText::new("ICAO")
+                    .color(egui::Color32::from_rgb(150, 200, 200))
+                    .size(9.0));
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.filter_icao)
+                        .hint_text("e.g., A1234")
+                        .desired_width(150.0));
+                    if !self.filter_icao.is_empty() {
+                        if ui.small_button("✖").clicked() {
+                            self.filter_icao.clear();
+                        }
+                    }
+                });
+
+                ui.add_space(2.0);
+
+                // Registration filter
+                ui.label(egui::RichText::new("Registration")
+                    .color(egui::Color32::from_rgb(150, 200, 200))
+                    .size(9.0));
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.filter_registration)
+                        .hint_text("e.g., N12345")
+                        .desired_width(150.0));
+                    if !self.filter_registration.is_empty() {
+                        if ui.small_button("✖").clicked() {
+                            self.filter_registration.clear();
+                        }
+                    }
+                });
+
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(2.0);
+
+                // Sort by
+                ui.label(egui::RichText::new("Sort By")
+                    .color(egui::Color32::from_rgb(150, 200, 200))
+                    .size(9.0));
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.sort_by, SortCriterion::Altitude, "Altitude");
+                    ui.radio_value(&mut self.sort_by, SortCriterion::Speed, "Speed");
+                    ui.radio_value(&mut self.sort_by, SortCriterion::Range, "Range");
+                });
+
+                // Sort direction
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Direction:")
+                        .color(egui::Color32::from_rgb(150, 200, 200))
+                        .size(9.0));
+                    if ui.button(match self.sort_direction {
+                        SortDirection::Ascending => "↑ Ascending",
+                        SortDirection::Descending => "↓ Descending",
+                    }).clicked() {
+                        self.sort_direction = match self.sort_direction {
+                            SortDirection::Ascending => SortDirection::Descending,
+                            SortDirection::Descending => SortDirection::Ascending,
+                        };
+                    }
+                });
+
+                ui.add_space(2.0);
+
+                // Reset filters button
+                if ui.button("Reset Filters").clicked() {
+                    self.filters_enabled = false;
+                    self.filter_altitude_min = 0.0;
+                    self.filter_altitude_max = 50000.0;
+                    self.filter_speed_min = 0.0;
+                    self.filter_speed_max = 600.0;
+                    self.filter_range_min = 0.0;
+                    self.filter_range_max = 400.0;
+                    self.filter_registration.clear();
+                    self.filter_icao.clear();
+                }
+            });
 
         ui.add_space(4.0);
 
-        let mut aircraft_list: Vec<&Aircraft> = aircraft_data.iter().collect();
+        // Apply filtering if enabled
+        let mut aircraft_list: Vec<&Aircraft> = if self.filters_enabled {
+            aircraft_data.iter().filter(|aircraft| {
+                // Altitude filter
+                let alt_ok = if let Some(alt) = aircraft.altitude() {
+                    alt as f32 >= self.filter_altitude_min && alt as f32 <= self.filter_altitude_max
+                } else {
+                    false // Exclude aircraft without altitude data when filtering
+                };
+
+                // Speed filter
+                let speed_ok = if let Some(vel) = aircraft.velocity() {
+                    vel as f32 >= self.filter_speed_min && vel as f32 <= self.filter_speed_max
+                } else {
+                    false // Exclude aircraft without speed data when filtering
+                };
+
+                // Range filter
+                let range_ok = if let Some(range) = aircraft.distance_from_nm(self.receiver_lat, self.receiver_lon) {
+                    range as f32 >= self.filter_range_min && range as f32 <= self.filter_range_max
+                } else {
+                    false // Exclude aircraft without position data when filtering
+                };
+
+                // ICAO filter (case-insensitive substring match)
+                let icao_ok = if self.filter_icao.is_empty() {
+                    true // No filter applied
+                } else {
+                    aircraft.icao().to_lowercase().contains(&self.filter_icao.to_lowercase())
+                };
+
+                // Registration filter (case-insensitive substring match)
+                let registration_ok = if self.filter_registration.is_empty() {
+                    true // No filter applied
+                } else {
+                    if let Some(reg) = aircraft.registration() {
+                        reg.to_lowercase().contains(&self.filter_registration.to_lowercase())
+                    } else {
+                        false // Exclude aircraft without registration when filtering by it
+                    }
+                };
+
+                alt_ok && speed_ok && range_ok && icao_ok && registration_ok
+            }).collect()
+        } else {
+            aircraft_data.iter().collect()
+        };
+
+        let filtered_count = aircraft_list.len();
+
+        // Apply dynamic sorting based on sort criterion and direction
         aircraft_list.sort_unstable_by(|a, b| {
-            // Sort by altitude descending (highest threat first)
-            b.altitude().unwrap_or(0).cmp(&a.altitude().unwrap_or(0))
+            let ordering = match self.sort_by {
+                SortCriterion::Altitude => {
+                    let a_alt = a.altitude().unwrap_or(0);
+                    let b_alt = b.altitude().unwrap_or(0);
+                    a_alt.cmp(&b_alt)
+                }
+                SortCriterion::Speed => {
+                    let a_speed = a.velocity().unwrap_or(0.0);
+                    let b_speed = b.velocity().unwrap_or(0.0);
+                    a_speed.partial_cmp(&b_speed).unwrap_or(std::cmp::Ordering::Equal)
+                }
+                SortCriterion::Range => {
+                    let a_range = a.distance_from_nm(self.receiver_lat, self.receiver_lon).unwrap_or(f64::MAX);
+                    let b_range = b.distance_from_nm(self.receiver_lat, self.receiver_lon).unwrap_or(f64::MAX);
+                    a_range.partial_cmp(&b_range).unwrap_or(std::cmp::Ordering::Equal)
+                }
+            };
+
+            // Apply sort direction
+            match self.sort_direction {
+                SortDirection::Ascending => ordering,
+                SortDirection::Descending => ordering.reverse(),
+            }
+        });
+
+        // Display count with filter status
+        ui.horizontal(|ui| {
+            if self.filters_enabled && filtered_count < total_count {
+                ui.label(egui::RichText::new(format!("SHOWING: {} of {}", filtered_count, total_count))
+                    .color(egui::Color32::from_rgb(255, 200, 100))
+                    .size(10.0)
+                    .monospace());
+            } else {
+                ui.label(egui::RichText::new(format!("TOTAL: {}", total_count))
+                    .color(egui::Color32::from_rgb(150, 150, 150))
+                    .size(10.0)
+                    .monospace());
+            }
         });
 
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1005,6 +1305,72 @@ impl AdsbApp {
 
         // Draw background - black to blend with dark map tiles during loading
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(0, 0, 0));
+
+        // Auto-pan to newly selected aircraft if it's outside center 30% of viewport
+        if let Some(ref selected_icao) = self.selected_aircraft {
+            // Check if this is a new selection (different from previous)
+            let is_new_selection = self.previous_selected_aircraft.as_ref() != Some(selected_icao);
+
+            // Reset following flag when a new aircraft is selected
+            if is_new_selection {
+                self.following_aircraft = false;
+                self.stored_map_center = None;
+            }
+
+            if is_new_selection && !self.following_aircraft {
+                // Get the selected aircraft
+                let aircraft_opt = {
+                    let tracker = self.tracker.lock().unwrap();
+                    tracker.get_aircraft_by_icao(selected_icao)
+                };
+
+                if let Some(aircraft) = aircraft_opt {
+                    if let (Some(lat), Some(lon)) = (aircraft.latitude(), aircraft.longitude()) {
+                        // Calculate where this aircraft would appear on screen with current map center
+                        let tile_zoom_level = self.map_zoom_level.round() as u8;
+                        let tile_pixel_size = 256.0;
+                        let zoom_fraction = self.map_zoom_level - tile_zoom_level as f32;
+                        let scale_factor = 2.0_f32.powf(zoom_fraction);
+
+                        let aircraft_tile_x = WebMercator::lon_to_x(lon, tile_zoom_level);
+                        let aircraft_tile_y = WebMercator::lat_to_y(lat, tile_zoom_level);
+                        let center_tile_x = WebMercator::lon_to_x(self.map_center_lon, tile_zoom_level);
+                        let center_tile_y = WebMercator::lat_to_y(self.map_center_lat, tile_zoom_level);
+
+                        let pixel_x = (aircraft_tile_x - center_tile_x) * tile_pixel_size as f64 * scale_factor as f64;
+                        let pixel_y = (aircraft_tile_y - center_tile_y) * tile_pixel_size as f64 * scale_factor as f64;
+
+                        let aircraft_screen_pos = egui::pos2(
+                            center.x + pixel_x as f32,
+                            center.y + pixel_y as f32,
+                        );
+
+                        // Calculate center 30% bounds (15% from center in each direction)
+                        let center_30_width = rect.width() * 0.30;
+                        let center_30_height = rect.height() * 0.30;
+                        let center_rect = egui::Rect::from_center_size(
+                            center,
+                            egui::vec2(center_30_width, center_30_height),
+                        );
+
+                        // Check if aircraft is outside the center 30%
+                        if !center_rect.contains(aircraft_screen_pos) {
+                            // Store current map center before panning
+                            self.stored_map_center = Some((self.map_center_lat, self.map_center_lon));
+                            self.following_aircraft = true;
+
+                            // Pan to aircraft position
+                            self.map_center_lat = lat;
+                            self.map_center_lon = lon;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update previous selection AFTER checking for new selection
+        // This ensures that on the next frame, we can detect if the selection changed
+        self.previous_selected_aircraft = self.selected_aircraft.clone();
 
         // Reset hover state at start of frame
         self.hovered_map_item = None;
@@ -1707,8 +2073,6 @@ impl AdsbApp {
                         let hover_radius = size * 1.8 + 5.0; // Size of airplane + margin for easier hovering
                         if distance <= hover_radius {
                             self.hovered_map_item = Some(HoveredMapItem::Aircraft(aircraft.clone()));
-                            // Also select the aircraft and trigger auto-scroll in the list
-                            self.selected_aircraft = Some(icao.clone());
                         }
                     }
                 }
@@ -1716,6 +2080,7 @@ impl AdsbApp {
         }
 
         // Handle map clicks for aircraft selection/deselection
+        let mut should_restore_map_position = false;
         if response.clicked() {
             if let Some(click_pos) = response.interact_pointer_pos() {
                 let mut clicked_aircraft: Option<String> = None;
@@ -1734,6 +2099,11 @@ impl AdsbApp {
                             }
                         }
                     }
+                }
+
+                // If clicking empty space while following, mark for restoration
+                if clicked_aircraft.is_none() && self.following_aircraft {
+                    should_restore_map_position = true;
                 }
 
                 // Update selection: select clicked aircraft or deselect if empty space clicked
@@ -1851,6 +2221,16 @@ impl AdsbApp {
                     });
             }
         }
+
+        // Restore map position if we clicked on empty space while following an aircraft
+        if should_restore_map_position {
+            if let Some((stored_lat, stored_lon)) = self.stored_map_center {
+                self.map_center_lat = stored_lat;
+                self.map_center_lon = stored_lon;
+                self.stored_map_center = None;
+                self.following_aircraft = false;
+            }
+        }
     }
 }
 
@@ -1904,14 +2284,15 @@ impl eframe::App for AdsbApp {
                     // Spawn TCP connection in background
                     self.system_status.lock().unwrap().add_diagnostic(
                         DiagnosticLevel::Info,
-                        "Starting TCP client...".to_string()
+                        format!("Starting TCP client (connecting to {})...", self.server_address)
                     );
 
                     let tracker_clone = self.tracker.clone();
                     let status_clone = self.system_status.clone();
+                    let server_address = self.server_address.clone();
                     std::thread::spawn(move || {
                         let rt = tokio::runtime::Runtime::new().unwrap();
-                        rt.block_on(tcp_client::connect_adsb_feed(tracker_clone, status_clone));
+                        rt.block_on(tcp_client::connect_adsb_feed(&server_address, tracker_clone, status_clone));
                     });
 
                     self.startup_state = StartupState::LoadingAviationData;
@@ -2182,9 +2563,6 @@ impl eframe::App for AdsbApp {
             let status = self.system_status.lock().unwrap();
             self.status_pane.render(ctx, &status);
         }
-
-        // Update previous selection for next frame
-        self.previous_selected_aircraft = self.selected_aircraft.clone();
 
         // Update frame time performance metrics
         let frame_duration = frame_start.elapsed().as_secs_f64() * 1000.0;

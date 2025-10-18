@@ -20,9 +20,7 @@ use tokio::time::{sleep, Duration};
 use crate::basestation::AircraftTracker;
 use crate::status::{SharedSystemStatus, ConnectionStatus};
 
-pub async fn connect_adsb_feed(tracker: Arc<Mutex<AircraftTracker>>, status: SharedSystemStatus) {
-    let address = "localhost:30003";
-
+pub async fn connect_adsb_feed(address: &str, tracker: Arc<Mutex<AircraftTracker>>, status: SharedSystemStatus) {
     // Set initial connection address
     status.lock().unwrap().connection_address = address.to_string();
 
