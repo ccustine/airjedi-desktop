@@ -62,7 +62,7 @@ async fn connect_and_process(
 
     let reader = BufReader::new(stream);
     let mut lines = reader.lines();
-    let mut cleanup_counter = 0;
+    let mut cleanup_counter: u32 = 0;
 
     while let Some(line) = lines.next_line().await? {
         // Parse the BaseStation message - scope lock to drop before next await
@@ -76,7 +76,7 @@ async fn connect_and_process(
         status.lock().unwrap().increment_message_count();
 
         // Cleanup old aircraft every N messages
-        cleanup_counter += 1;
+        cleanup_counter = cleanup_counter.saturating_add(1);
         if cleanup_counter >= CLEANUP_INTERVAL_MESSAGES {
             let mut tracker_lock = tracker.lock()
                 .expect("Aircraft tracker mutex poisoned");

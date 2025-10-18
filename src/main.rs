@@ -42,12 +42,31 @@ const TRAIL_MAX_AGE_SECONDS: f32 = 300.0;  // 5 minutes total
 const TRAIL_SOLID_DURATION_SECONDS: f32 = 225.0;  // First 75% solid (3.75 minutes)
 const TRAIL_FADE_DURATION_SECONDS: f32 = 75.0;  // Last 25% fade (1.25 minutes)
 
+/// Validate server address format (host:port)
+fn validate_server_address(s: &str) -> Result<String, String> {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 2 {
+        return Err("Server address must be in format host:port".to_string());
+    }
+
+    // Validate port number
+    parts[1].parse::<u16>()
+        .map_err(|_| "Invalid port number (must be 0-65535)".to_string())?;
+
+    Ok(s.to_string())
+}
+
 /// AirJedi Desktop - Real-time ADS-B aircraft tracking application
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct CliArgs {
     /// BaseStation/SBS-1 feed address
-    #[arg(short, long, default_value = "localhost:30003")]
+    #[arg(
+        short,
+        long,
+        default_value = "localhost:30003",
+        value_parser = validate_server_address
+    )]
     server: String,
 }
 
