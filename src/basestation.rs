@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use log::{info, warn};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Mutex};
 use chrono::{DateTime, Utc};
@@ -260,14 +261,14 @@ impl Aircraft {
                     // Check if we've already rejected multiple times in a row
                     // If so, assume the data is actually correct (likely a delay/gap)
                     if data.consecutive_rejections >= MAX_CONSECUTIVE_REJECTIONS {
-                        println!("Accepting position for {} after {} consecutive rejections (jumped {:.1} miles)",
+                        info!("Accepting position for {} after {} consecutive rejections (jumped {:.1} miles)",
                             data.icao, data.consecutive_rejections, distance_from_last);
                         data.consecutive_rejections = 0;
                         // Continue with position update
                     } else {
                         // Position jump too large - reject and increment counter
                         data.consecutive_rejections += 1;
-                        println!("Rejected position for {}: jumped {:.1} miles (rejection {} of 3)",
+                        warn!("Rejected position for {}: jumped {:.1} miles (rejection {} of 3)",
                             data.icao, distance_from_last, data.consecutive_rejections);
                         return false;
                     }

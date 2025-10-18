@@ -175,6 +175,9 @@ fn get_current_location() -> Option<(f64, f64)> {
 }
 
 fn main() -> Result<(), eframe::Error> {
+    // Initialize logging
+    env_logger::init();
+
     // Parse command-line arguments
     let args = CliArgs::parse();
 

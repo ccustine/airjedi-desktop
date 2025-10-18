@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use log::{info, warn, error};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpStream;
@@ -30,16 +31,16 @@ pub async fn connect_adsb_feed(address: &str, tracker: Arc<Mutex<AircraftTracker
 
         match connect_and_process(address, tracker.clone(), status.clone()).await {
             Ok(_) => {
-                println!("ADSB connection closed normally");
+                info!("ADSB connection closed normally");
                 status.lock().unwrap().set_connection_status(ConnectionStatus::Disconnected);
             }
             Err(e) => {
-                eprintln!("ADSB connection error: {}", e);
+                error!("ADSB connection error: {}", e);
                 status.lock().unwrap().set_connection_error(e.to_string());
             }
         }
 
-        println!("Reconnecting in 5 seconds...");
+        warn!("Reconnecting in 5 seconds...");
         sleep(Duration::from_secs(5)).await;
     }
 }
@@ -52,10 +53,10 @@ async fn connect_and_process(
     tracker: Arc<Mutex<AircraftTracker>>,
     status: SharedSystemStatus,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Connecting to {}...", address);
+    info!("Connecting to {}...", address);
 
     let stream = TcpStream::connect(address).await?;
-    println!("Connected to BaseStation feed");
+    info!("Connected to BaseStation feed");
 
     // Mark connection as successful
     status.lock().unwrap().set_connection_status(ConnectionStatus::Connected);
@@ -85,6 +86,6 @@ async fn connect_and_process(
         }
     }
 
-    println!("Connection closed by server");
+    info!("Connection closed by server");
     Ok(())
 }
