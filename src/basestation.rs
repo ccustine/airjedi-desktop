@@ -202,6 +202,19 @@ impl Aircraft {
             .metadata_fetched
     }
 
+    /// Execute a closure with read-only access to position history
+    /// This avoids cloning the entire vector, which is expensive when called every frame
+    pub fn with_position_history<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&[PositionPoint]) -> R,
+    {
+        let data = self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state");
+        f(&data.position_history)
+    }
+
+    /// Get a cloned copy of the position history
+    /// Note: This clones the entire vector - prefer `with_position_history()` for read-only access
     pub fn position_history(&self) -> Vec<PositionPoint> {
         self.inner.read()
             .expect("Aircraft data lock poisoned - unrecoverable state")
