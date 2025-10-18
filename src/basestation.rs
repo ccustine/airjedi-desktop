@@ -17,6 +17,14 @@ use std::sync::{Arc, RwLock, Mutex};
 use chrono::{DateTime, Utc};
 use crate::status::SystemStatus;
 
+// Constants for position validation and tracking
+const NAUTICAL_MILE_CONVERSION: f64 = 1.15078; // 1 nautical mile = 1.15078 statute miles
+const JUMP_DETECTION_TIME_WINDOW_SECONDS: i64 = 20; // Only apply jump detection within this time window
+const JUMP_DETECTION_THRESHOLD_MILES: f64 = 10.0; // Maximum allowed position jump in miles
+const MAX_CONSECUTIVE_REJECTIONS: u32 = 3; // Accept position after this many rejections (likely data delay)
+const POSITION_CHANGE_THRESHOLD_DEGREES: f64 = 0.001; // ~100 meters at mid-latitudes
+const TRAIL_HISTORY_SECONDS: i64 = 300; // Keep 5 minutes of position history
+
 // Calculate distance between two lat/lon points using Haversine formula (in miles)
 fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let r = 3958.8; // Earth's radius in miles
@@ -36,8 +44,8 @@ fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 // Calculate distance in nautical miles between two lat/lon points
 pub fn haversine_distance_nm(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let statute_miles = haversine_distance(lat1, lon1, lat2, lon2);
-    // Convert statute miles to nautical miles (1 nm = 1.15078 statute miles)
-    statute_miles / 1.15078
+    // Convert statute miles to nautical miles
+    statute_miles / NAUTICAL_MILE_CONVERSION
 }
 
 #[derive(Debug, Clone)]
@@ -104,72 +112,105 @@ impl Aircraft {
 
     // Convenience accessor methods for common read-only operations
     pub fn icao(&self) -> String {
-        self.inner.read().unwrap().icao.clone()
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .icao.clone()
     }
 
     pub fn callsign(&self) -> Option<String> {
-        self.inner.read().unwrap().callsign.clone()
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .callsign.clone()
     }
 
     pub fn latitude(&self) -> Option<f64> {
-        self.inner.read().unwrap().latitude
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .latitude
     }
 
     pub fn longitude(&self) -> Option<f64> {
-        self.inner.read().unwrap().longitude
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .longitude
     }
 
     pub fn altitude(&self) -> Option<i32> {
-        self.inner.read().unwrap().altitude
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .altitude
     }
 
     pub fn track(&self) -> Option<f64> {
-        self.inner.read().unwrap().track
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .track
     }
 
     pub fn velocity(&self) -> Option<f64> {
-        self.inner.read().unwrap().velocity
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .velocity
     }
 
     pub fn vertical_rate(&self) -> Option<i32> {
-        self.inner.read().unwrap().vertical_rate
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .vertical_rate
     }
 
     pub fn last_seen(&self) -> DateTime<Utc> {
-        self.inner.read().unwrap().last_seen
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .last_seen
     }
 
     pub fn registration(&self) -> Option<String> {
-        self.inner.read().unwrap().registration.clone()
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .registration.clone()
     }
 
     pub fn aircraft_type(&self) -> Option<String> {
-        self.inner.read().unwrap().aircraft_type.clone()
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .aircraft_type.clone()
     }
 
     pub fn photo_url(&self) -> Option<String> {
-        self.inner.read().unwrap().photo_url.clone()
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .photo_url.clone()
     }
 
     pub fn photo_thumbnail_url(&self) -> Option<String> {
-        self.inner.read().unwrap().photo_thumbnail_url.clone()
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .photo_thumbnail_url.clone()
     }
 
     pub fn photographer(&self) -> Option<String> {
-        self.inner.read().unwrap().photographer.clone()
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .photographer.clone()
     }
 
     pub fn metadata_fetched(&self) -> bool {
-        self.inner.read().unwrap().metadata_fetched
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .metadata_fetched
     }
 
     pub fn position_history(&self) -> Vec<PositionPoint> {
-        self.inner.read().unwrap().position_history.clone()
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .position_history.clone()
     }
 
     /// Calculate distance in nautical miles from a given point to this aircraft
     pub fn distance_from_nm(&self, from_lat: f64, from_lon: f64) -> Option<f64> {
-        let data = self.inner.read().unwrap();
+        let data = self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state");
         if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
             Some(haversine_distance_nm(from_lat, from_lon, lat, lon))
         } else {
@@ -182,7 +223,8 @@ impl Aircraft {
     where
         F: FnOnce(&AircraftData) -> R,
     {
-        let data = self.inner.read().unwrap();
+        let data = self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state");
         f(&data)
     }
 
@@ -191,12 +233,14 @@ impl Aircraft {
     where
         F: FnOnce(&mut AircraftData) -> R,
     {
-        let mut data = self.inner.write().unwrap();
+        let mut data = self.inner.write()
+            .expect("Aircraft data lock poisoned - unrecoverable state");
         f(&mut data)
     }
 
     pub fn update_position(&self, lat: f64, lon: f64, center_lat: f64, center_lon: f64, max_distance: f64) -> bool {
-        let mut data = self.inner.write().unwrap();
+        let mut data = self.inner.write()
+            .expect("Aircraft data lock poisoned - unrecoverable state");
 
         // Check if position is within max distance from center
         let distance_from_center = haversine_distance(center_lat, center_lon, lat, lon);
@@ -204,18 +248,18 @@ impl Aircraft {
             return false; // Position rejected - too far from center
         }
 
-        // Check if position is within 10 miles of previous position (only if recent update)
+        // Check if position is within threshold of previous position (only if recent update)
         if let (Some(last_lat), Some(last_lon)) = (data.latitude, data.longitude) {
             let time_since_last_update = (Utc::now() - data.last_seen).num_seconds();
 
-            // Only apply jump detection if last update was within 20 seconds
+            // Only apply jump detection if last update was recent
             // This prevents false rejections after connectivity gaps
-            if time_since_last_update <= 20 {
+            if time_since_last_update <= JUMP_DETECTION_TIME_WINDOW_SECONDS {
                 let distance_from_last = haversine_distance(last_lat, last_lon, lat, lon);
-                if distance_from_last > 10.0 {
-                    // Check if we've already rejected 3+ times in a row
+                if distance_from_last > JUMP_DETECTION_THRESHOLD_MILES {
+                    // Check if we've already rejected multiple times in a row
                     // If so, assume the data is actually correct (likely a delay/gap)
-                    if data.consecutive_rejections >= 3 {
+                    if data.consecutive_rejections >= MAX_CONSECUTIVE_REJECTIONS {
                         println!("Accepting position for {} after {} consecutive rejections (jumped {:.1} miles)",
                             data.icao, data.consecutive_rejections, distance_from_last);
                         data.consecutive_rejections = 0;
@@ -231,10 +275,11 @@ impl Aircraft {
             }
         }
 
-        // Only add to history if position has changed significantly (> ~100 meters)
+        // Only add to history if position has changed significantly
         let should_add = if let (Some(last_lat), Some(last_lon)) = (data.latitude, data.longitude) {
+            // Fast Euclidean approximation - accurate enough for ~100m threshold
             let distance = ((lat - last_lat).powi(2) + (lon - last_lon).powi(2)).sqrt();
-            distance > 0.001 // roughly 100 meters at mid-latitudes
+            distance > POSITION_CHANGE_THRESHOLD_DEGREES
         } else {
             true
         };
@@ -259,7 +304,8 @@ impl Aircraft {
     }
 
     pub fn cleanup_old_history(&self, max_age_seconds: i64) {
-        let mut data = self.inner.write().unwrap();
+        let mut data = self.inner.write()
+            .expect("Aircraft data lock poisoned - unrecoverable state");
         let now = Utc::now();
         data.position_history.retain(|point| {
             (now - point.timestamp).num_seconds() < max_age_seconds
@@ -327,7 +373,7 @@ impl AircraftTracker {
         // Clean up old position history only if time-limited trails are enabled
         if self.time_limited_trails {
             for aircraft in self.aircraft.values() {
-                aircraft.cleanup_old_history(300); // Keep 5 minutes of history
+                aircraft.cleanup_old_history(TRAIL_HISTORY_SECONDS);
             }
         }
 
@@ -396,7 +442,9 @@ impl AircraftTracker {
                                     // Record position update for sparkline tracking
                                     if updated {
                                         if let Some(ref status) = self.status {
-                                            status.lock().unwrap().record_position_update();
+                                            status.lock()
+                                                .expect("System status lock poisoned - unrecoverable state")
+                                                .record_position_update();
                                         }
                                     }
                                 }
@@ -451,7 +499,9 @@ impl AircraftTracker {
                                     // Record position update for sparkline tracking
                                     if updated {
                                         if let Some(ref status) = self.status {
-                                            status.lock().unwrap().record_position_update();
+                                            status.lock()
+                                                .expect("System status lock poisoned - unrecoverable state")
+                                                .record_position_update();
                                         }
                                     }
                                 }

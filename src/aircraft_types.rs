@@ -42,8 +42,8 @@ impl AircraftTypeDatabase {
                 continue;
             }
 
-            // Split by semicolon
-            let parts: Vec<&str> = line.split(';').collect();
+            // Split by semicolon (limit to 6 parts for efficiency)
+            let parts: Vec<&str> = line.splitn(6, ';').collect();
 
             // Need at least 6 parts (indices 0-5)
             if parts.len() < 6 {
@@ -71,16 +71,18 @@ impl AircraftTypeDatabase {
 
     /// Lookup full aircraft type name by ICAO type code
     /// Returns the full descriptive name if found, None otherwise
-    pub fn lookup(&self, type_code: &str) -> Option<&String> {
-        self.type_map.get(type_code)
+    pub fn lookup(&self, type_code: &str) -> Option<&str> {
+        self.type_map.get(type_code).map(|s| s.as_str())
     }
 
     /// Get the number of type codes in the database
+    #[must_use]
     pub fn len(&self) -> usize {
         self.type_map.len()
     }
 
     /// Check if the database is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.type_map.is_empty()
     }

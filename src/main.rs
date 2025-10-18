@@ -443,8 +443,8 @@ impl MapItemPopup for Aircraft {
                 // Lookup full aircraft type name from type database
                 let type_display = if let Ok(type_db) = aircraft_types.lock() {
                     type_db.lookup(aircraft_type)
-                        .map(|s| s.clone())
-                        .unwrap_or_else(|| aircraft_type.clone())
+                        .unwrap_or(aircraft_type.as_str())
+                        .to_string()
                 } else {
                     aircraft_type.clone()
                 };
@@ -453,7 +453,7 @@ impl MapItemPopup for Aircraft {
                     ui.label(egui::RichText::new("Type:")
                         .color(egui::Color32::from_rgb(150, 150, 150))
                         .size(9.0));
-                    ui.label(egui::RichText::new(&type_display)
+                    ui.label(egui::RichText::new(type_display)
                         .color(egui::Color32::from_rgb(180, 150, 200))
                         .size(9.0));
                 });
@@ -1246,8 +1246,8 @@ impl AdsbApp {
                                         // Lookup full aircraft type name from type database
                                         let type_display = if let Ok(type_db) = self.aircraft_types.lock() {
                                             type_db.lookup(aircraft_type)
-                                                .map(|s| s.clone())
-                                                .unwrap_or_else(|| aircraft_type.clone())
+                                                .unwrap_or(aircraft_type.as_str())
+                                                .to_string()
                                         } else {
                                             aircraft_type.clone()
                                         };
