@@ -40,6 +40,12 @@ pub struct AppConfig {
 
     /// Airport filter mode: "All", "FrequentlyUsed", or "MajorOnly"
     pub airport_filter: String,
+
+    /// Aircraft list panel expanded state
+    pub aircraft_list_expanded: bool,
+
+    /// Aircraft list panel width in pixels
+    pub aircraft_list_width: f32,
 }
 
 impl Default for AppConfig {
@@ -52,6 +58,8 @@ impl Default for AppConfig {
             default_zoom: 8.0,
             time_limited_trails: false,
             airport_filter: "FrequentlyUsed".to_string(),
+            aircraft_list_expanded: true,
+            aircraft_list_width: 350.0,
         }
     }
 }

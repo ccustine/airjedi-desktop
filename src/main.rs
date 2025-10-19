@@ -619,6 +619,9 @@ struct AdsbApp {
     // UI window state
     show_map_overlays_window: bool,
     show_settings_window: bool,
+    // Aircraft list panel state
+    aircraft_list_expanded: bool,
+    aircraft_list_width: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -841,9 +844,11 @@ impl AdsbApp {
             server_address: server_address.clone(),
             server_address_tx: None, // Will be set when TCP client thread is spawned
             settings_server_edit: server_address,
-            config,
+            config: config.clone(),
             show_map_overlays_window: false,
             show_settings_window: false,
+            aircraft_list_expanded: config.aircraft_list_expanded,
+            aircraft_list_width: config.aircraft_list_width,
         }
     }
 
@@ -913,13 +918,24 @@ impl AdsbApp {
 
         let total_count = aircraft_data.len();
 
-        // Military-style header
+        // Military-style header with collapse button
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("◈ CONTACT LIST")
                     .color(egui::Color32::from_rgb(100, 200, 100))
                     .size(14.0)
                     .strong());
+
+                // Collapse button on the right
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let collapse_button = egui::Button::new("▶")
+                        .fill(egui::Color32::from_rgba_unmultiplied(45, 50, 55, 150))
+                        .frame(false);
+
+                    if ui.add(collapse_button).clicked() {
+                        self.aircraft_list_expanded = false;
+                    }
+                });
             });
         });
 
@@ -2312,12 +2328,20 @@ impl eframe::App for AdsbApp {
             egui::Modifiers::COMMAND,
             egui::Key::Comma,
         );
+        const AIRCRAFT_LIST_SHORTCUT: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
+            egui::Modifiers::COMMAND,
+            egui::Key::L,
+        );
 
         // Handle keyboard shortcuts
         ctx.input_mut(|i| {
             // Cmd+, (Command+Comma) for Settings
             if i.consume_shortcut(&SETTINGS_SHORTCUT) {
                 self.show_settings_window = true;
+            }
+            // Cmd+L (Command+L) for Aircraft List toggle
+            if i.consume_shortcut(&AIRCRAFT_LIST_SHORTCUT) {
+                self.aircraft_list_expanded = !self.aircraft_list_expanded;
             }
         });
 
@@ -2527,6 +2551,19 @@ impl eframe::App for AdsbApp {
                         self.show_map_overlays_window = true;
                     }
                     ui.separator();
+                    // Aircraft List with checkmark and keyboard shortcut
+                    let aircraft_list_text = if self.aircraft_list_expanded {
+                        "✓ Aircraft List"
+                    } else {
+                        "  Aircraft List"
+                    };
+                    if ui.add(egui::Button::new(aircraft_list_text)
+                        .shortcut_text(ui.ctx().format_shortcut(&AIRCRAFT_LIST_SHORTCUT)))
+                        .clicked()
+                    {
+                        self.aircraft_list_expanded = !self.aircraft_list_expanded;
+                    }
+                    ui.separator();
                     ui.add_enabled(false, egui::Button::new("Zoom In"));
                     ui.add_enabled(false, egui::Button::new("Zoom Out"));
                     ui.separator();
@@ -2543,65 +2580,135 @@ impl eframe::App for AdsbApp {
                 self.draw_map(ui);
             });
 
-        // Floating aircraft list on the right with gradient sheen effect
-        let screen_height = ctx.screen_rect().height();
-        egui::Window::new("Aircraft List")
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
-            .fixed_size(egui::vec2(350.0, screen_height - 20.0))
-            .resizable(false)
-            .collapsible(true)
-            .frame(egui::Frame::NONE
-                .fill(egui::Color32::TRANSPARENT)
-                .corner_radius(8.0)
-            )
-            .show(ctx, |ui| {
+        // Docked aircraft list panel on the right with smooth collapse animation
+        // Calculate animated width for smooth expand/collapse
+        let collapsed_width = 40.0;
+        let target_width = if self.aircraft_list_expanded {
+            self.aircraft_list_width
+        } else {
+            collapsed_width
+        };
+
+        let animated_width = ctx.animate_value_with_time(
+            egui::Id::new("aircraft_list_width_anim"),
+            target_width,
+            0.2 // 200ms animation duration
+        );
+
+        // Configure panel differently based on expanded state
+        let panel = egui::SidePanel::right("aircraft_list_panel")
+            .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT));
+
+        // Apply width constraints based on state
+        let panel = if self.aircraft_list_expanded {
+            // Expanded: allow resizing within range
+            panel.resizable(true)
+                .min_width(200.0)
+                .max_width(600.0)
+                .default_width(self.aircraft_list_width)
+        } else {
+            // Collapsed: force exact width with animation
+            panel.resizable(false)
+                .exact_width(animated_width)
+        };
+
+        let panel_response = panel.show(ctx, |ui| {
                 // Draw gradient background for sheen effect
                 let rect = ui.available_rect_before_wrap();
-                let painter = ui.painter();
 
-                // Layer 1: Solid background for clarity and separation from map
-                painter.rect_filled(
-                    rect,
-                    8.0,  // Corner radius matches window frame
-                    egui::Color32::from_rgba_unmultiplied(25, 30, 35, 153)  // 60% opacity dark background
-                );
+                if self.aircraft_list_expanded {
+                    // Expanded state - show full gradient background
+                    let painter = ui.painter();
 
-                // Layer 2: Gradient overlay for sheen effect (vivid with higher opacity and brightness)
-                let top_color = egui::Color32::from_rgba_unmultiplied(55, 64, 72, 179);     // Top (70% opacity, 15% less bright)
-                let bottom_color = egui::Color32::from_rgba_unmultiplied(15, 20, 25, 128); // Darker bottom (50% opacity)
+                    // Layer 1: Solid background for clarity and separation from map
+                    painter.rect_filled(
+                        rect,
+                        0.0,
+                        egui::Color32::from_rgba_unmultiplied(25, 30, 35, 153)  // 60% opacity dark background
+                    );
 
-                // Draw gradient using mesh with vertices
-                let mut mesh = egui::epaint::Mesh::default();
+                    // Layer 2: Gradient overlay for sheen effect
+                    let top_color = egui::Color32::from_rgba_unmultiplied(55, 64, 72, 179);
+                    let bottom_color = egui::Color32::from_rgba_unmultiplied(15, 20, 25, 128);
 
-                // Add vertices: top-left, top-right, bottom-right, bottom-left
-                mesh.vertices.push(egui::epaint::Vertex {
-                    pos: rect.left_top(),
-                    uv: egui::epaint::WHITE_UV,
-                    color: top_color,
-                });
-                mesh.vertices.push(egui::epaint::Vertex {
-                    pos: rect.right_top(),
-                    uv: egui::epaint::WHITE_UV,
-                    color: top_color,
-                });
-                mesh.vertices.push(egui::epaint::Vertex {
-                    pos: rect.right_bottom(),
-                    uv: egui::epaint::WHITE_UV,
-                    color: bottom_color,
-                });
-                mesh.vertices.push(egui::epaint::Vertex {
-                    pos: rect.left_bottom(),
-                    uv: egui::epaint::WHITE_UV,
-                    color: bottom_color,
-                });
+                    // Draw gradient using mesh with vertices
+                    let mut mesh = egui::epaint::Mesh::default();
+                    mesh.vertices.push(egui::epaint::Vertex {
+                        pos: rect.left_top(),
+                        uv: egui::epaint::WHITE_UV,
+                        color: top_color,
+                    });
+                    mesh.vertices.push(egui::epaint::Vertex {
+                        pos: rect.right_top(),
+                        uv: egui::epaint::WHITE_UV,
+                        color: top_color,
+                    });
+                    mesh.vertices.push(egui::epaint::Vertex {
+                        pos: rect.right_bottom(),
+                        uv: egui::epaint::WHITE_UV,
+                        color: bottom_color,
+                    });
+                    mesh.vertices.push(egui::epaint::Vertex {
+                        pos: rect.left_bottom(),
+                        uv: egui::epaint::WHITE_UV,
+                        color: bottom_color,
+                    });
+                    mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+                    painter.add(egui::Shape::mesh(mesh));
 
-                // Add triangles (two triangles make a rectangle)
-                mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+                    self.draw_aircraft_list(ui);
+                } else {
+                    // Collapsed state - show thin vertical tab
+                    // Draw background and vertical text
+                    {
+                        let painter = ui.painter();
+                        painter.rect_filled(
+                            rect,
+                            0.0,
+                            egui::Color32::from_rgba_unmultiplied(35, 40, 45, 200)
+                        );
 
-                painter.add(egui::Shape::mesh(mesh));
+                        // Vertical text "CONTACTS"
+                        let center_x = rect.center().x;
+                        let mut y_pos = rect.top() + 60.0;
+                        let text = "CONTACTS";
 
-                self.draw_aircraft_list(ui);
+                        for ch in text.chars() {
+                            painter.text(
+                                egui::pos2(center_x, y_pos),
+                                egui::Align2::CENTER_TOP,
+                                ch.to_string(),
+                                egui::FontId::proportional(11.0),
+                                egui::Color32::from_rgb(100, 200, 200),
+                            );
+                            y_pos += 14.0;
+                        }
+                    } // painter dropped here
+
+                    // Expand button/icon at the top
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(20.0);
+                        let expand_button = egui::Button::new("◀")
+                            .fill(egui::Color32::from_rgba_unmultiplied(45, 50, 55, 200))
+                            .frame(false);
+
+                        if ui.add(expand_button).clicked() {
+                            self.aircraft_list_expanded = true;
+                        }
+                    });
+                }
             });
+
+        // Update panel width when user resizes (only when expanded)
+        if self.aircraft_list_expanded {
+            let current_width = panel_response.response.rect.width();
+            if (current_width - self.aircraft_list_width).abs() > 1.0 {
+                self.aircraft_list_width = current_width;
+                // Save to config
+                self.config.aircraft_list_width = current_width;
+                let _ = self.config.save();
+            }
+        }
 
         // Overlay controls window (only shown when opened from View menu)
         egui::Window::new("Map Overlays")
