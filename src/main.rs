@@ -17,6 +17,7 @@ mod aircraft_db;
 mod aircraft_metadata;
 mod aircraft_types;
 mod basestation;
+mod config;
 mod photo_cache;
 mod status;
 mod status_pane;
@@ -36,6 +37,8 @@ use status_pane::StatusPane;
 use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use tiles::{TileManager, WebMercator};
+use tokio::sync::watch;
+use config::DEFAULT_SERVER_ADDRESS;
 
 // Trail display constants
 const TRAIL_MAX_AGE_SECONDS: f32 = 300.0;  // 5 minutes total
@@ -64,7 +67,7 @@ struct CliArgs {
     #[arg(
         short,
         long,
-        default_value = "localhost:30003",
+        default_value = DEFAULT_SERVER_ADDRESS,
         value_parser = validate_server_address
     )]
     server: String,
@@ -178,11 +181,34 @@ fn main() -> Result<(), eframe::Error> {
     // Initialize logging
     env_logger::init();
 
-    // Parse command-line arguments
+    // Load configuration from disk (or create default if it doesn't exist)
+    let mut config = match config::AppConfig::load() {
+        Ok(cfg) => {
+            println!("Configuration loaded successfully");
+            cfg
+        }
+        Err(e) => {
+            eprintln!("Warning: Failed to load config: {}. Using defaults.", e);
+            config::AppConfig::default()
+        }
+    };
+
+    // Parse command-line arguments (these override config file)
     let args = CliArgs::parse();
 
+    // CLI args override config file
+    if args.server != DEFAULT_SERVER_ADDRESS {
+        // User provided a non-default server, override config
+        config.server_address = args.server.clone();
+    }
+
     println!("Starting AirJedi Desktop...");
-    println!("Connecting to SBS-1 server at: {}", args.server);
+    println!("Connecting to SBS-1 server at: {}", config.server_address);
+
+    // Display config file path
+    if let Ok(config_path) = config::AppConfig::get_config_path() {
+        println!("Config file: {}", config_path.display());
+    }
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -192,13 +218,12 @@ fn main() -> Result<(), eframe::Error> {
     };
 
     println!("Initializing window...");
-    let server_address = args.server.clone();
     eframe::run_native(
         "AirJedi Desktop",
         options,
         Box::new(move |_cc| {
             println!("Creating application...");
-            Ok(Box::new(AdsbApp::new(server_address)))
+            Ok(Box::new(AdsbApp::new(config)))
         }),
     )
 }
@@ -586,6 +611,14 @@ struct AdsbApp {
     following_aircraft: bool, // Whether we've auto-panned to an aircraft
     // SBS-1 server configuration
     server_address: String,
+    server_address_tx: Option<watch::Sender<String>>, // Channel to notify TCP client of address changes
+    // Application configuration
+    config: config::AppConfig,
+    // Settings UI state
+    settings_server_edit: String, // Edited server address (for UI text field)
+    // UI window state
+    show_map_overlays_window: bool,
+    show_settings_window: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -714,7 +747,7 @@ impl AdsbApp {
         (150, 50, 255)
     }
 
-    fn new(server_address: String) -> Self {
+    fn new(config: config::AppConfig) -> Self {
         println!("Initializing ADSB app...");
 
         // Initialize core structures
@@ -745,7 +778,16 @@ impl AdsbApp {
             "Starting AirJedi Desktop...".to_string()
         );
 
+        // Parse airport filter from config
+        let airport_filter = match config.airport_filter.as_str() {
+            "All" => AirportFilter::All,
+            "MajorOnly" => AirportFilter::MajorOnly,
+            _ => AirportFilter::FrequentlyUsed, // Default fallback
+        };
+
         println!("App structure initialized - startup will continue in first frames");
+
+        let server_address = config.server_address.clone();
 
         Self {
             tracker,
@@ -753,24 +795,24 @@ impl AdsbApp {
             map_center_lon: default_lon,
             receiver_lat: default_lat,
             receiver_lon: default_lon,
-            map_zoom_level: 8.0, // Zoom level 8 ≈ 150 mile range
+            map_zoom_level: config.default_zoom,
             tile_manager: TileManager::new(),
             tile_error: None,
             selected_aircraft: None,
             previous_selected_aircraft: None,
             aviation_data,
             aviation_data_loading,
-            show_airports: true,
-            show_runways: true,
-            show_navaids: false, // Off by default since there are many navaids
-            time_limited_trails: false, // Off by default - show full history trails
-            airport_filter: AirportFilter::FrequentlyUsed, // Default to frequently used
+            show_airports: config.show_airports,
+            show_runways: config.show_runways,
+            show_navaids: config.show_navaids,
+            time_limited_trails: config.time_limited_trails,
+            airport_filter,
             cached_bounds: None,
             last_bounds_zoom: 0.0,
             last_bounds_center: (0.0, 0.0),
             cached_aviation_data: None,
             last_aviation_cache_bounds: None,
-            last_aviation_cache_filter: AirportFilter::FrequentlyUsed,
+            last_aviation_cache_filter: airport_filter,
             hovered_map_item: None,
             aircraft_db,
             aircraft_types,
@@ -796,7 +838,12 @@ impl AdsbApp {
             // Auto-pan state
             stored_map_center: None,
             following_aircraft: false,
-            server_address,
+            server_address: server_address.clone(),
+            server_address_tx: None, // Will be set when TCP client thread is spawned
+            settings_server_edit: server_address,
+            config,
+            show_map_overlays_window: false,
+            show_settings_window: false,
         }
     }
 
@@ -2177,7 +2224,7 @@ impl AdsbApp {
             egui::Align2::LEFT_TOP,
             "Drag to pan | Scroll/pinch to zoom",
             egui::FontId::proportional(12.0),
-            egui::Color32::BLACK,
+            egui::Color32::WHITE,
         );
 
         // Attribution (required by Carto)
@@ -2260,6 +2307,20 @@ impl eframe::App for AdsbApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let frame_start = std::time::Instant::now();
 
+        // Define keyboard shortcuts as constants to avoid duplication
+        const SETTINGS_SHORTCUT: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
+            egui::Modifiers::COMMAND,
+            egui::Key::Comma,
+        );
+
+        // Handle keyboard shortcuts
+        ctx.input_mut(|i| {
+            // Cmd+, (Command+Comma) for Settings
+            if i.consume_shortcut(&SETTINGS_SHORTCUT) {
+                self.show_settings_window = true;
+            }
+        });
+
         // Startup sequence - perform initialization steps across first few frames
         if self.startup_state != StartupState::Complete {
             self.startup_frame_count += 1;
@@ -2309,12 +2370,17 @@ impl eframe::App for AdsbApp {
                         format!("Starting TCP client (connecting to {})...", self.server_address)
                     );
 
+                    // Create watch channel for server address hot-reload
+                    let (server_tx, server_rx) = watch::channel(self.server_address.clone());
+
+                    // Store sender for later use in Settings UI
+                    self.server_address_tx = Some(server_tx);
+
                     let tracker_clone = self.tracker.clone();
                     let status_clone = self.system_status.clone();
-                    let server_address = self.server_address.clone();
                     std::thread::spawn(move || {
                         let rt = tokio::runtime::Runtime::new().unwrap();
-                        rt.block_on(tcp_client::connect_adsb_feed(&server_address, tracker_clone, status_clone));
+                        rt.block_on(tcp_client::connect_adsb_feed(server_rx, tracker_clone, status_clone));
                     });
 
                     self.startup_state = StartupState::LoadingAviationData;
@@ -2434,6 +2500,42 @@ impl eframe::App for AdsbApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
 
+        // Menu bar at the top
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    ui.add_enabled(false, egui::Button::new("New"));
+                    ui.add_enabled(false, egui::Button::new("Open"));
+                    ui.separator();
+                    ui.add_enabled(false, egui::Button::new("Save"));
+                    ui.add_enabled(false, egui::Button::new("Save As..."));
+                    ui.separator();
+                    if ui.add(egui::Button::new("Settings...")
+                        .shortcut_text(ui.ctx().format_shortcut(&SETTINGS_SHORTCUT)))
+                        .clicked()
+                    {
+                        self.show_settings_window = true;
+                    }
+                    ui.separator();
+                    if ui.button("Exit").clicked() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+
+                ui.menu_button("View", |ui| {
+                    if ui.button("Map Overlays...").clicked() {
+                        self.show_map_overlays_window = true;
+                    }
+                    ui.separator();
+                    ui.add_enabled(false, egui::Button::new("Zoom In"));
+                    ui.add_enabled(false, egui::Button::new("Zoom Out"));
+                    ui.separator();
+                    ui.add_enabled(false, egui::Button::new("Reset View"));
+                    ui.add_enabled(false, egui::Button::new("Fullscreen"));
+                });
+            });
+        });
+
         // Map takes full width
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -2501,12 +2603,11 @@ impl eframe::App for AdsbApp {
                 self.draw_aircraft_list(ui);
             });
 
-        // Overlay controls window (top-left)
+        // Overlay controls window (only shown when opened from View menu)
         egui::Window::new("Map Overlays")
-            .anchor(egui::Align2::LEFT_TOP, egui::vec2(10.0, 10.0))
             .resizable(false)
-            .collapsible(true)
-            .default_open(false)
+            .collapsible(false)
+            .open(&mut self.show_map_overlays_window)
             .show(ctx, |ui| {
                 // Check if data is still loading
                 let is_loading = *self.aviation_data_loading.lock().unwrap();
@@ -2518,9 +2619,14 @@ impl eframe::App for AdsbApp {
                         .color(egui::Color32::from_rgb(150, 150, 150))
                         .size(9.0));
                 } else {
+                    // Track if any settings changed for auto-save
+                    let mut settings_changed = false;
+
                     ui.horizontal(|ui| {
                         ui.label("Airports:");
-                        ui.checkbox(&mut self.show_airports, "");
+                        if ui.checkbox(&mut self.show_airports, "").changed() {
+                            settings_changed = true;
+                        }
                     });
 
                     // Airport filter options (indented)
@@ -2532,34 +2638,62 @@ impl eframe::App for AdsbApp {
 
                         ui.horizontal(|ui| {
                             ui.add_space(10.0);
-                            ui.radio_value(&mut self.airport_filter, AirportFilter::FrequentlyUsed, "Public/Frequent");
+                            if ui.radio_value(&mut self.airport_filter, AirportFilter::FrequentlyUsed, "Public/Frequent").changed() {
+                                settings_changed = true;
+                            }
                         });
                         ui.horizontal(|ui| {
                             ui.add_space(10.0);
-                            ui.radio_value(&mut self.airport_filter, AirportFilter::All, "All Airports");
+                            if ui.radio_value(&mut self.airport_filter, AirportFilter::All, "All Airports").changed() {
+                                settings_changed = true;
+                            }
                         });
                         ui.horizontal(|ui| {
                             ui.add_space(10.0);
-                            ui.radio_value(&mut self.airport_filter, AirportFilter::MajorOnly, "Major Only");
+                            if ui.radio_value(&mut self.airport_filter, AirportFilter::MajorOnly, "Major Only").changed() {
+                                settings_changed = true;
+                            }
                         });
                         ui.add_space(4.0);
                     }
 
                     ui.horizontal(|ui| {
                         ui.label("Runways:");
-                        ui.checkbox(&mut self.show_runways, "");
+                        if ui.checkbox(&mut self.show_runways, "").changed() {
+                            settings_changed = true;
+                        }
                     });
                     ui.horizontal(|ui| {
                         ui.label("Navaids:");
-                        ui.checkbox(&mut self.show_navaids, "");
+                        if ui.checkbox(&mut self.show_navaids, "").changed() {
+                            settings_changed = true;
+                        }
                     });
                     ui.horizontal(|ui| {
                         ui.label("Time-Limited Trails:");
                         if ui.checkbox(&mut self.time_limited_trails, "").changed() {
+                            settings_changed = true;
                             // Sync checkbox state to tracker
                             self.tracker.lock().unwrap().set_time_limited_trails(self.time_limited_trails);
                         }
                     });
+
+                    // Auto-save settings if any changed
+                    if settings_changed {
+                        self.config.show_airports = self.show_airports;
+                        self.config.show_runways = self.show_runways;
+                        self.config.show_navaids = self.show_navaids;
+                        self.config.time_limited_trails = self.time_limited_trails;
+                        self.config.airport_filter = match self.airport_filter {
+                            AirportFilter::All => "All".to_string(),
+                            AirportFilter::FrequentlyUsed => "FrequentlyUsed".to_string(),
+                            AirportFilter::MajorOnly => "MajorOnly".to_string(),
+                        };
+
+                        if let Err(e) = self.config.save() {
+                            eprintln!("Failed to save config: {}", e);
+                        }
+                    }
                     ui.separator();
 
                     // Get counts from locked data
@@ -2577,6 +2711,96 @@ impl eframe::App for AdsbApp {
                                 .color(egui::Color32::from_rgb(150, 150, 150)));
                         }
                     }
+                }
+            });
+
+        // Settings window (only shown when opened from File menu or Cmd+,)
+        egui::Window::new("Settings")
+            .resizable(false)
+            .collapsible(false)
+            .open(&mut self.show_settings_window)
+            .show(ctx, |ui| {
+                ui.heading(egui::RichText::new("Server Configuration")
+                    .size(12.0)
+                    .strong());
+
+                ui.add_space(8.0);
+
+                // Server address input
+                ui.horizontal(|ui| {
+                    ui.label("Server:");
+                    ui.add(egui::TextEdit::singleline(&mut self.settings_server_edit)
+                        .hint_text("host:port")
+                        .desired_width(150.0));
+                });
+
+                ui.add_space(4.0);
+
+                // Validate and show current status
+                let is_valid = validate_server_address(&self.settings_server_edit).is_ok();
+                if !is_valid && !self.settings_server_edit.is_empty() {
+                    ui.label(egui::RichText::new("⚠ Invalid format (use host:port)")
+                        .color(egui::Color32::from_rgb(255, 150, 100))
+                        .size(9.0));
+                }
+
+                ui.add_space(8.0);
+
+                // Save button
+                ui.horizontal(|ui| {
+                    if ui.button("💾 Save & Reconnect").clicked() && is_valid {
+                        // Update config and save to disk
+                        self.config.server_address = self.settings_server_edit.clone();
+
+                        match self.config.save() {
+                            Ok(_) => {
+                                println!("Settings saved successfully");
+
+                                // Hot-reload: Send new server address to TCP client thread
+                                if let Some(ref tx) = self.server_address_tx {
+                                    if let Err(e) = tx.send(self.settings_server_edit.clone()) {
+                                        eprintln!("Failed to send server address update: {}", e);
+                                    } else {
+                                        println!("Reconnecting to new server: {}", self.settings_server_edit);
+                                        // Update local server address for UI comparison
+                                        self.server_address = self.settings_server_edit.clone();
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to save settings: {}", e);
+                            }
+                        }
+                    }
+
+                    if ui.button("↻ Reset to Defaults").clicked() {
+                        let default_config = config::AppConfig::default();
+                        self.settings_server_edit = default_config.server_address;
+                    }
+                });
+
+                ui.add_space(4.0);
+
+                // Show connection status when addresses differ
+                if self.settings_server_edit != self.server_address {
+                    ui.label(egui::RichText::new("⚡ Click 'Save & Reconnect' to apply changes")
+                        .color(egui::Color32::from_rgb(255, 200, 100))
+                        .size(9.0));
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // Show config file path
+                if let Ok(config_path) = config::AppConfig::get_config_path() {
+                    ui.label(egui::RichText::new("Config file:")
+                        .size(9.0)
+                        .color(egui::Color32::from_rgb(150, 150, 150)));
+                    ui.label(egui::RichText::new(config_path.display().to_string())
+                        .size(8.0)
+                        .color(egui::Color32::from_rgb(120, 120, 120))
+                        .monospace());
                 }
             });
 

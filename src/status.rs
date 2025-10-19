@@ -89,7 +89,7 @@ impl SystemStatus {
     pub fn new() -> Self {
         Self {
             connection_status: ConnectionStatus::Disconnected,
-            connection_address: "localhost:30003".to_string(),
+            connection_address: String::new(),
             last_connection_attempt: None,
             last_successful_connection: None,
             connection_uptime_seconds: 0,

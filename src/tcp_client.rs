@@ -17,22 +17,41 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, Duration};
+use tokio::sync::watch;
 
 use crate::basestation::AircraftTracker;
 use crate::status::{SharedSystemStatus, ConnectionStatus};
 
-pub async fn connect_adsb_feed(address: &str, tracker: Arc<Mutex<AircraftTracker>>, status: SharedSystemStatus) {
-    // Set initial connection address
-    status.lock().unwrap().connection_address = address.to_string();
-
+pub async fn connect_adsb_feed(
+    mut address_rx: watch::Receiver<String>,
+    tracker: Arc<Mutex<AircraftTracker>>,
+    status: SharedSystemStatus
+) {
     loop {
+        // Get current server address from the watch channel
+        let current_address = address_rx.borrow_and_update().clone();
+
+        // Set current connection address in status
+        status.lock().unwrap().connection_address = current_address.clone();
+
         // Set status to connecting
         status.lock().unwrap().set_connection_status(ConnectionStatus::Connecting);
 
-        match connect_and_process(address, tracker.clone(), status.clone()).await {
-            Ok(_) => {
-                info!("ADSB connection closed normally");
-                status.lock().unwrap().set_connection_status(ConnectionStatus::Disconnected);
+        // Clone for use in the async block
+        let address = current_address.clone();
+
+        match connect_and_process(&address, tracker.clone(), status.clone(), address_rx.clone()).await {
+            Ok(reconnect_reason) => {
+                match reconnect_reason {
+                    ReconnectReason::ServerAddressChanged => {
+                        info!("Server address changed, reconnecting immediately...");
+                        continue; // Skip the 5-second delay
+                    }
+                    ReconnectReason::ConnectionClosed => {
+                        info!("ADSB connection closed normally");
+                        status.lock().unwrap().set_connection_status(ConnectionStatus::Disconnected);
+                    }
+                }
             }
             Err(e) => {
                 error!("ADSB connection error: {}", e);
@@ -45,6 +64,11 @@ pub async fn connect_adsb_feed(address: &str, tracker: Arc<Mutex<AircraftTracker
     }
 }
 
+enum ReconnectReason {
+    ServerAddressChanged,
+    ConnectionClosed,
+}
+
 const CLEANUP_INTERVAL_MESSAGES: u32 = 100;
 const AIRCRAFT_TIMEOUT_SECONDS: i64 = 180; // 3 minutes
 
@@ -52,7 +76,8 @@ async fn connect_and_process(
     address: &str,
     tracker: Arc<Mutex<AircraftTracker>>,
     status: SharedSystemStatus,
-) -> Result<(), Box<dyn std::error::Error>> {
+    mut address_rx: watch::Receiver<String>,
+) -> Result<ReconnectReason, Box<dyn std::error::Error>> {
     info!("Connecting to {}...", address);
 
     let stream = TcpStream::connect(address).await?;
@@ -83,9 +108,18 @@ async fn connect_and_process(
                 .expect("Aircraft tracker mutex poisoned");
             tracker_lock.cleanup_old(AIRCRAFT_TIMEOUT_SECONDS);
             cleanup_counter = 0;
+
+            // Check if server address has changed (piggyback on cleanup interval)
+            if address_rx.has_changed().unwrap_or(false) {
+                let new_address = address_rx.borrow_and_update().clone();
+                if new_address != address {
+                    info!("Server address changed from {} to {}, reconnecting...", address, new_address);
+                    return Ok(ReconnectReason::ServerAddressChanged);
+                }
+            }
         }
     }
 
     info!("Connection closed by server");
-    Ok(())
+    Ok(ReconnectReason::ConnectionClosed)
 }
