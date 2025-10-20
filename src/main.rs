@@ -2580,6 +2580,11 @@ impl AdsbApp {
 
         use walkers::Map;
 
+        // Variable to track hovered items inside the map closure
+        let mut detected_hover: Option<HoveredMapItem> = None;
+        // Variable to track clicked aircraft
+        let mut clicked_aircraft_icao: Option<String> = None;
+
         let map_response = Map::new(
             Some(&mut self.http_tiles),
             &mut self.map_memory,
@@ -2589,6 +2594,16 @@ impl AdsbApp {
             let painter = ui.painter();
             let rect = ui.max_rect();
             let map_zoom_level = map_memory.zoom() as f32;
+            let hover_pos = ui.input(|i| i.pointer.hover_pos());
+
+            // Detect clicks on the map
+            let click_pos = ui.input(|i| {
+                if i.pointer.primary_clicked() {
+                    i.pointer.interact_pos()
+                } else {
+                    None
+                }
+            });
 
             // Helper function using Walkers Projector
             let to_screen = |lat: f64, lon: f64| -> egui::Pos2 {
@@ -2711,6 +2726,15 @@ impl AdsbApp {
                             );
                         }
 
+                        // Check for hover
+                        if let Some(hover_pos_val) = hover_pos {
+                            let distance = hover_pos_val.distance(pos);
+                            let hover_radius = airport.render_radius() + 8.0;
+                            if distance <= hover_radius {
+                                detected_hover = Some(HoveredMapItem::Airport(airport.clone()));
+                            }
+                        }
+
                         airports_drawn += 1;
                     }
                 }
@@ -2752,6 +2776,15 @@ impl AdsbApp {
                                 egui::FontId::proportional(8.0),
                                 navaid_color,
                             );
+                        }
+
+                        // Check for hover
+                        if let Some(hover_pos_val) = hover_pos {
+                            let distance = hover_pos_val.distance(pos);
+                            let hover_radius = size + 8.0;
+                            if distance <= hover_radius {
+                                detected_hover = Some(HoveredMapItem::Navaid(navaid.clone()));
+                            }
                         }
 
                         navaids_drawn += 1;
@@ -2934,10 +2967,61 @@ impl AdsbApp {
                                 egui::Color32::from_rgb(200, 200, 200),
                             );
                         }
+
+                        // Check for hover on aircraft
+                        if let Some(hover_pos_val) = hover_pos {
+                            let distance = hover_pos_val.distance(pos);
+                            let hover_radius = size * 1.8 + 5.0;
+                            if distance <= hover_radius {
+                                detected_hover = Some(HoveredMapItem::Aircraft(aircraft.clone()));
+                            }
+                        }
+
+                        // Check for click on aircraft
+                        if let Some(click_pos_val) = click_pos {
+                            let distance = click_pos_val.distance(pos);
+                            let click_radius = size * 1.8 + 5.0;
+                            if distance <= click_radius {
+                                clicked_aircraft_icao = Some(icao.clone());
+                            }
+                        }
                     }
                 }
             }
+
+            (detected_hover, clicked_aircraft_icao)
         });
+
+        // Update hover state and handle clicks from the map
+        let (hover_result, click_result) = map_response.inner;
+        self.hovered_map_item = hover_result;
+
+        // Handle aircraft selection from map click
+        if let Some(clicked_icao) = click_result {
+            self.selected_aircraft = Some(clicked_icao);
+        }
+
+        // Render hover popup if hovering over a map item
+        if let Some(ref hovered_item) = self.hovered_map_item {
+            if let Some(hover_pos_val) = ui.input(|i| i.pointer.hover_pos()) {
+                // Position popup with offset to avoid obscuring the item
+                let popup_pos = hover_pos_val + egui::vec2(15.0, 10.0);
+
+                egui::Area::new("map_item_popup".into())
+                    .fixed_pos(popup_pos)
+                    .order(egui::Order::Tooltip)
+                    .show(ui.ctx(), |ui| {
+                        egui::Frame::popup(ui.style())
+                            .show(ui, |ui| {
+                                match hovered_item {
+                                    HoveredMapItem::Airport(airport) => airport.render_popup(ui, self.receiver_lat, self.receiver_lon, &self.aircraft_types),
+                                    HoveredMapItem::Navaid(navaid) => navaid.render_popup(ui, self.receiver_lat, self.receiver_lon, &self.aircraft_types),
+                                    HoveredMapItem::Aircraft(aircraft) => aircraft.render_popup(ui, self.receiver_lat, self.receiver_lon, &self.aircraft_types),
+                                }
+                            });
+                    });
+            }
+        }
 
         // Restore scroll input for the panel (if we saved it)
         if let (Some(smooth), Some(raw)) = (saved_smooth_scroll, saved_raw_scroll) {
