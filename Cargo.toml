@@ -23,6 +23,7 @@ clap = { version = "4.5", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
 confy = "0.6"
+webbrowser = "1.0.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

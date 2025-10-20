@@ -1221,158 +1221,225 @@ impl AdsbApp {
                     };
 
                     let inner_response = frame.show(ui, |ui| {
+                        let mut photo_double_clicked = false; // Track if photo was double-clicked
+                        let mut photo_single_clicked = false; // Track if photo was single-clicked
+                        let mut photo_rect = egui::Rect::NOTHING; // Track photo position
+                        let mut text_clicked = false; // Track if text area was clicked
+
                         ui.horizontal(|ui| {
-                            // Photo thumbnail on the left
-                            let texture = if let Some(ref photo_url) = aircraft.photo_thumbnail_url() {
-                                self.photo_manager.get_or_load_texture(ui.ctx(), &photo_url, &icao)
-                            } else {
-                                None
-                            };
+                            // Left column: All text information (make this clickable for card selection)
+                            let text_response = ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 1.0;
 
-                            if let Some(tex) = texture {
-                                ui.image((tex.id(), egui::vec2(48.0, 32.0)));
-                            } else if let Some(placeholder) = self.photo_manager.get_placeholder() {
-                                ui.image((placeholder.id(), egui::vec2(48.0, 32.0)));
-                            } else {
-                                // Fallback: empty space
-                                ui.add_space(48.0);
-                            }
-
-                            ui.add_space(4.0);
-
-                            // Right side: all aircraft info
-                            ui.vertical(|ui| {
-                                // Status line with ICAO and callsign
+                                // Row 1: Status + ICAO + Callsign + Altitude
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(status_symbol)
                                         .color(status_color)
-                                        .size(12.0));
+                                        .size(11.0));
 
                                     ui.label(egui::RichText::new(&icao)
                                         .color(egui::Color32::from_rgb(200, 220, 255))
-                                        .size(11.0)
+                                        .size(10.5)
                                         .monospace()
                                         .strong());
 
                                     if let Some(ref callsign) = aircraft.callsign() {
                                         let callsign_color = if is_selected {
-                                            egui::Color32::from_rgb(255, 50, 50) // Bright red when selected
+                                            egui::Color32::from_rgb(255, 50, 50)
                                         } else {
-                                            egui::Color32::from_rgb(150, 220, 150) // Green when not selected
+                                            egui::Color32::from_rgb(150, 220, 150)
                                         };
                                         ui.label(egui::RichText::new(format!("│ {}", callsign.trim()))
                                             .color(callsign_color)
-                                            .size(11.0)
+                                            .size(10.5)
                                             .strong());
                                     }
 
-                                    // Altitude indicator on the right
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if let Some(alt) = aircraft.altitude() {
-                                            let alt_text = if alt >= 18000 {
-                                                format!("{} FL{:03}", alt_indicator, alt / 100)
-                                            } else {
-                                                format!("{} {} ft", alt_indicator, alt)
-                                            };
-                                            ui.label(egui::RichText::new(alt_text)
-                                                .color(alt_color)
-                                                .size(10.0)
-                                                .monospace());
-                                        }
-                                    });
+                                    if let Some(alt) = aircraft.altitude() {
+                                        let alt_text = if alt >= 18000 {
+                                            format!("│ {} FL{:03}", alt_indicator, alt / 100)
+                                        } else {
+                                            format!("│ {} {}", alt_indicator, alt)
+                                        };
+                                        ui.label(egui::RichText::new(alt_text)
+                                            .color(alt_color)
+                                            .size(9.5)
+                                            .monospace());
+                                    }
                                 });
 
-                                // Data grid - compact military style
+                                // Row 2: Flight data (speed, heading, range) + metadata
                                 ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    ui.spacing_mut().item_spacing.x = 6.0;
 
-                                    // Speed
                                     if let Some(vel) = aircraft.velocity() {
-                                        ui.label(egui::RichText::new(format!("SPD {:03}", vel as i32))
-                                            .color(egui::Color32::from_rgb(180, 180, 180))
-                                            .size(9.0)
+                                        ui.label(egui::RichText::new(format!("{:03}kt", vel as i32))
+                                            .color(egui::Color32::from_rgb(170, 170, 170))
+                                            .size(8.0)
                                             .monospace());
                                     }
 
-                                    // Track/Heading
                                     if let Some(track) = aircraft.track() {
-                                        ui.label(egui::RichText::new(format!("HDG {:03}°", track as i32))
-                                            .color(egui::Color32::from_rgb(180, 180, 180))
-                                            .size(9.0)
+                                        ui.label(egui::RichText::new(format!("{:03}°", track as i32))
+                                            .color(egui::Color32::from_rgb(170, 170, 170))
+                                            .size(8.0)
                                             .monospace());
                                     }
 
-                                    // Range from receiver
                                     if let Some(range) = aircraft.distance_from_nm(self.receiver_lat, self.receiver_lon) {
-                                        ui.label(egui::RichText::new(format!("RNG {:.1}", range))
+                                        ui.label(egui::RichText::new(format!("{:.1}nm", range))
                                             .color(egui::Color32::from_rgb(100, 200, 255))
-                                            .size(9.0)
+                                            .size(8.0)
                                             .monospace());
                                     }
                                 });
 
-                                // Position coordinates - dim
-                                if let (Some(lat), Some(lon)) = (aircraft.latitude(), aircraft.longitude()) {
-                                    ui.label(egui::RichText::new(format!("{:>7.3}° {:>8.3}°", lat, lon))
-                                        .color(egui::Color32::from_rgb(120, 120, 120))
-                                        .size(8.5)
-                                        .monospace());
-                                }
-
-                                // Registration and Aircraft Type
+                                // Row 3: Registration + Aircraft Type + Timestamp
                                 ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+
                                     if let Some(ref registration) = aircraft.registration() {
-                                        ui.label(egui::RichText::new(format!("REG: {}", registration))
-                                            .color(egui::Color32::from_rgb(150, 180, 200))
-                                            .size(8.5)
+                                        ui.label(egui::RichText::new(registration)
+                                            .color(egui::Color32::from_rgb(140, 170, 190))
+                                            .size(7.5)
                                             .monospace());
                                     }
+
                                     if let Some(ref aircraft_type) = aircraft.aircraft_type() {
-                                        // Lookup full aircraft type name from type database
                                         let type_display = if let Ok(type_db) = self.aircraft_types.lock() {
-                                            type_db.lookup(aircraft_type)
-                                                .unwrap_or(aircraft_type.as_str())
-                                                .to_string()
+                                            let full_name = type_db.lookup(aircraft_type)
+                                                .unwrap_or(aircraft_type.as_str());
+                                            // Truncate if too long (keep first 18 chars for tighter fit)
+                                            if full_name.len() > 18 {
+                                                format!("{}…", &full_name[..17])
+                                            } else {
+                                                full_name.to_string()
+                                            }
                                         } else {
                                             aircraft_type.clone()
                                         };
 
-                                        ui.label(egui::RichText::new(format!("TYPE: {}", type_display))
-                                            .color(egui::Color32::from_rgb(180, 150, 200))
-                                            .size(8.5)
+                                        if aircraft.registration().is_some() {
+                                            ui.label(egui::RichText::new(format!("│ {}", type_display))
+                                                .color(egui::Color32::from_rgb(170, 140, 190))
+                                                .size(7.5));
+                                        } else {
+                                            ui.label(egui::RichText::new(type_display)
+                                                .color(egui::Color32::from_rgb(170, 140, 190))
+                                                .size(7.5));
+                                        }
+                                    }
+
+                                    // Add timestamp with appropriate separator
+                                    let has_metadata = aircraft.registration().is_some() || aircraft.aircraft_type().is_some();
+                                    if has_metadata {
+                                        ui.label(egui::RichText::new(format!("│ {}s", seconds_ago))
+                                            .color(egui::Color32::from_rgb(100, 100, 100))
+                                            .size(7.5)
+                                            .monospace());
+                                    } else {
+                                        ui.label(egui::RichText::new(format!("{}s", seconds_ago))
+                                            .color(egui::Color32::from_rgb(100, 100, 100))
+                                            .size(7.5)
                                             .monospace());
                                     }
                                 });
+                            }); // Close left column
 
-                                // Last seen timestamp
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(format!("T-{:03}s", seconds_ago))
-                                        .color(egui::Color32::from_rgb(100, 100, 100))
-                                        .size(8.0)
-                                        .monospace());
-                                });
-                            }); // Close vertical layout
-                        }); // Close horizontal layout with photo
+                            // Make text area clickable for card selection
+                            let text_click_response = ui.interact(
+                                text_response.response.rect,
+                                ui.id().with(format!("{}_text", icao)),
+                                egui::Sense::click()
+                            );
+
+                            if text_click_response.clicked() {
+                                text_clicked = true;
+                            }
+
+                            // Flexible spacer to push photo to the right
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                                // Right column: Photo at top corner - full card height (clickable link to Planespotters)
+                                let texture = if let Some(ref photo_url) = aircraft.photo_thumbnail_url() {
+                                    self.photo_manager.get_or_load_texture(ui.ctx(), &photo_url, &icao)
+                                } else {
+                                    None
+                                };
+
+                                // Larger photo to span full card height (80×60 from 48×32)
+                                // Make it double-clickable to open Planespotters page
+                                if let Some(tex) = texture {
+                                    let image_response = ui.add(
+                                        egui::Image::new((tex.id(), egui::vec2(80.0, 60.0)))
+                                            .sense(egui::Sense::click())
+                                    ).on_hover_text("Double-click to view on Planespotters.net");
+
+                                    // Store photo rectangle
+                                    photo_rect = image_response.rect;
+
+                                    // Add hover cursor
+                                    if image_response.hovered() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    }
+
+                                    // Check for double-click FIRST (before single-click)
+                                    if image_response.double_clicked() {
+                                        let url = format!("https://www.planespotters.net/hex/{}", icao);
+                                        if let Err(e) = webbrowser::open(&url) {
+                                            eprintln!("Failed to open browser: {}", e);
+                                        }
+                                        photo_double_clicked = true;
+                                    } else if image_response.clicked() {
+                                        photo_single_clicked = true;
+                                    }
+                                } else if let Some(placeholder) = self.photo_manager.get_placeholder() {
+                                    let image_response = ui.add(
+                                        egui::Image::new((placeholder.id(), egui::vec2(80.0, 60.0)))
+                                            .sense(egui::Sense::click())
+                                    ).on_hover_text("Double-click to view on Planespotters.net");
+
+                                    // Store photo rectangle
+                                    photo_rect = image_response.rect;
+
+                                    // Add hover cursor for placeholder
+                                    if image_response.hovered() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    }
+
+                                    // Check for double-click FIRST (before single-click)
+                                    if image_response.double_clicked() {
+                                        let url = format!("https://www.planespotters.net/hex/{}", icao);
+                                        if let Err(e) = webbrowser::open(&url) {
+                                            eprintln!("Failed to open browser: {}", e);
+                                        }
+                                        photo_double_clicked = true;
+                                    } else if image_response.clicked() {
+                                        photo_single_clicked = true;
+                                    }
+                                }
+                            });
+                        }); // Close horizontal layout
+
+                        (photo_double_clicked, photo_single_clicked, photo_rect, text_clicked) // Return all interaction state
                     });
 
-                    // Make the entire frame area clickable
-                    let response = ui.interact(
-                        inner_response.response.rect,
-                        ui.id().with(&icao),
-                        egui::Sense::click()
-                    );
+                    // Extract interaction state
+                    let (photo_was_double_clicked, photo_was_single_clicked, _photo_rect, text_was_clicked) = inner_response.inner;
 
                     // Handle click to select this aircraft
-                    if response.clicked() {
-                        self.selected_aircraft = Some(icao.clone());
+                    // Select if: single-click on photo, OR click on text area (but not double-click on photo)
+                    if !photo_was_double_clicked {
+                        if photo_was_single_clicked || text_was_clicked {
+                            self.selected_aircraft = Some(icao.clone());
+                        }
                     }
 
                     // Auto-scroll to selected aircraft if it's a new selection
                     if is_selected && self.previous_selected_aircraft.as_ref() != Some(&icao) {
-                        response.scroll_to_me(Some(egui::Align::Center));
+                        inner_response.response.scroll_to_me(Some(egui::Align::Center));
                     }
 
-                    ui.add_space(3.0);
+                    ui.add_space(1.0); // Reduced from 3.0 for more compact list
                 }
             });
         });
