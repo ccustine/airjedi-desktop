@@ -55,7 +55,7 @@ impl Default for AppConfig {
             show_airports: true,
             show_runways: true,
             show_navaids: false,
-            default_zoom: 8.0,
+            default_zoom: 7.0,
             time_limited_trails: false,
             airport_filter: "FrequentlyUsed".to_string(),
             aircraft_list_expanded: true,

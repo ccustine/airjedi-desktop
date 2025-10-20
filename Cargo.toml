@@ -6,8 +6,9 @@ license = "Apache-2.0"
 authors = ["Chris Custine <124975+ccustine@users.noreply.github.com>"]
 
 [dependencies]
-eframe = "0.32"
-egui = "0.32"
+eframe = "0.33"
+egui = "0.33"
+walkers = "0.47.0"
 tokio = { version = "1", features = ["full"] }
 chrono = "0.4"
 reqwest = { version = "0.12", features = ["blocking", "json", "native-tls-vendored"], default-features = false }

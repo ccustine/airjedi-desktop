@@ -17,6 +17,7 @@ mod aircraft_db;
 mod aircraft_metadata;
 mod aircraft_types;
 mod basestation;
+mod carto_tiles;
 mod config;
 mod photo_cache;
 mod status;
@@ -29,6 +30,7 @@ use aircraft_types::AircraftTypeDatabase;
 use aircraft_metadata::MetadataService;
 use aviation_data::{AviationData, Airport, Navaid};
 use basestation::{Aircraft, AircraftTracker};
+use carto_tiles::CartoTileSource;
 use clap::Parser;
 use eframe::egui;
 use photo_cache::PhotoTextureManager;
@@ -39,6 +41,7 @@ use serde::Deserialize;
 use tiles::{TileManager, WebMercator};
 use tokio::sync::watch;
 use config::DEFAULT_SERVER_ADDRESS;
+use walkers::{HttpTiles, MapMemory, HttpOptions, lat_lon};
 
 // Trail display constants
 const TRAIL_MAX_AGE_SECONDS: f32 = 300.0;  // 5 minutes total
@@ -221,9 +224,9 @@ fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         "AirJedi Desktop",
         options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
             println!("Creating application...");
-            Ok(Box::new(AdsbApp::new(config)))
+            Ok(Box::new(AdsbApp::new(config, &cc.egui_ctx)))
         }),
     )
 }
@@ -561,6 +564,10 @@ struct AdsbApp {
     receiver_lat: f64,
     receiver_lon: f64,
     map_zoom_level: f32, // Float for smoother pinch-zoom
+    // Walkers tile management
+    http_tiles: HttpTiles,
+    map_memory: MapMemory,
+    // Legacy tile manager (will be removed)
     tile_manager: TileManager,
     tile_error: Option<String>,
     selected_aircraft: Option<String>, // ICAO of selected aircraft
@@ -750,7 +757,7 @@ impl AdsbApp {
         (150, 50, 255)
     }
 
-    fn new(config: config::AppConfig) -> Self {
+    fn new(config: config::AppConfig, egui_ctx: &egui::Context) -> Self {
         println!("Initializing ADSB app...");
 
         // Initialize core structures
@@ -762,6 +769,25 @@ impl AdsbApp {
         let aircraft_types = Arc::new(Mutex::new(AircraftTypeDatabase::new()));
         let metadata_service = Arc::new(MetadataService::new());
         let photo_manager = PhotoTextureManager::new();
+
+        // Initialize Walkers tile management
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from(".cache"))
+            .join("airjedi-desktop")
+            .join("tiles");
+
+        let http_options = HttpOptions {
+            cache: Some(cache_dir),
+            ..Default::default()
+        };
+
+        let http_tiles = HttpTiles::with_options(CartoTileSource, http_options, egui_ctx.clone());
+
+        // Initialize MapMemory with configured default zoom level
+        let mut map_memory = MapMemory::default();
+        if let Err(e) = map_memory.set_zoom(config.default_zoom as f64) {
+            eprintln!("Warning: Failed to set default zoom level: {:?}", e);
+        }
 
         // Load aircraft type database from CSV file
         if let Err(e) = aircraft_types.lock().unwrap().load_from_file("data/aircraft.csv") {
@@ -799,6 +825,8 @@ impl AdsbApp {
             receiver_lat: default_lat,
             receiver_lon: default_lon,
             map_zoom_level: config.default_zoom,
+            http_tiles,
+            map_memory,
             tile_manager: TileManager::new(),
             tile_error: None,
             selected_aircraft: None,
@@ -2384,6 +2412,501 @@ impl AdsbApp {
             }
         }
     }
+
+    fn draw_map_walkers(&mut self, ui: &mut egui::Ui) {
+        // Sync zoom level from MapMemory
+        self.map_zoom_level = self.map_memory.zoom() as f32;
+
+        // Auto-pan to newly selected aircraft
+        if let Some(ref selected_icao) = self.selected_aircraft {
+            let is_new_selection = self.previous_selected_aircraft.as_ref() != Some(selected_icao);
+
+            if is_new_selection {
+                self.following_aircraft = false;
+                self.stored_map_center = None;
+            }
+
+            if is_new_selection && !self.following_aircraft {
+                let aircraft_opt = {
+                    let tracker = self.tracker.lock().unwrap();
+                    tracker.get_aircraft_by_icao(selected_icao)
+                };
+
+                if let Some(aircraft) = aircraft_opt {
+                    if let (Some(lat), Some(lon)) = (aircraft.latitude(), aircraft.longitude()) {
+                        self.map_memory.center_at(lat_lon(lat, lon));
+                        self.stored_map_center = Some((lat, lon));
+                        self.following_aircraft = true;
+                    }
+                }
+            }
+        }
+
+        self.previous_selected_aircraft = self.selected_aircraft.clone();
+        self.hovered_map_item = None;
+
+        // PREPARE DATA BEFORE RENDERING (can't mutate self inside closure)
+        // Calculate viewport bounds using simple approximation
+        let tile_zoom_level = self.map_zoom_level.round() as u8;
+        let tile_pixel_size = 256.0;
+        let scale = 2.0_f64.powf(tile_zoom_level as f64);
+
+        // Approximate bounds (will be refined by Walkers)
+        let viewport_size = ui.available_size();
+        let half_viewport_width = (viewport_size.x as f64) / 2.0;
+        let half_viewport_height = (viewport_size.y as f64) / 2.0;
+        let degrees_per_pixel_lon = 360.0 / (tile_pixel_size * scale);
+        let degrees_per_pixel_lat = 180.0 / (tile_pixel_size * scale);
+        let padding_multiplier = 1.5;
+        let lon_range = (half_viewport_width * degrees_per_pixel_lon) * padding_multiplier;
+        let lat_range = (half_viewport_height * degrees_per_pixel_lat) * padding_multiplier;
+
+        // Get map center from MapMemory (use x() for lon, y() for lat since Point is in (lon, lat) order)
+        let map_position = self.map_memory.detached().unwrap_or_else(|| lat_lon(self.receiver_lat, self.receiver_lon));
+        let map_center_lat = map_position.y();
+        let map_center_lon = map_position.x();
+
+        let min_lat = (map_center_lat - lat_range).max(-85.0);
+        let max_lat = (map_center_lat + lat_range).min(85.0);
+        let min_lon = map_center_lon - lon_range;
+        let max_lon = map_center_lon + lon_range;
+
+        // Update aviation data cache if needed
+        let bounds_changed_significantly = if let Some((last_min_lat, last_max_lat, last_min_lon, last_max_lon)) = self.last_aviation_cache_bounds {
+            let lat_threshold = (last_max_lat - last_min_lat) * 0.1;
+            let lon_threshold = (last_max_lon - last_min_lon) * 0.1;
+            (min_lat - last_min_lat).abs() > lat_threshold
+                || (max_lat - last_max_lat).abs() > lat_threshold
+                || (min_lon - last_min_lon).abs() > lon_threshold
+                || (max_lon - last_max_lon).abs() > lon_threshold
+        } else {
+            true
+        };
+
+        let cache_needs_update = self.cached_aviation_data.is_none()
+            || bounds_changed_significantly
+            || self.last_aviation_cache_filter != self.airport_filter;
+
+        if cache_needs_update {
+            if let Ok(aviation_data) = self.aviation_data.lock() {
+                let airports: Vec<_> = aviation_data.get_airports_in_bounds(min_lat, max_lat, min_lon, max_lon)
+                    .into_iter()
+                    .cloned()
+                    .collect();
+
+                let runways: Vec<(String, Vec<_>)> = airports.iter()
+                    .map(|airport| {
+                        let airport_runways = aviation_data.get_runways_for_airport(&airport.icao)
+                            .into_iter()
+                            .cloned()
+                            .collect();
+                        (airport.icao.clone(), airport_runways)
+                    })
+                    .collect();
+
+                let navaids: Vec<_> = aviation_data.get_navaids_in_bounds(min_lat, max_lat, min_lon, max_lon)
+                    .into_iter()
+                    .cloned()
+                    .collect();
+
+                self.cached_aviation_data = Some((airports, runways, navaids));
+                self.last_aviation_cache_bounds = Some((min_lat, max_lat, min_lon, max_lon));
+                self.last_aviation_cache_filter = self.airport_filter;
+            }
+        }
+
+        // Get references to cached data
+        let (visible_airports, airport_runways, visible_navaids) = if let Some((ref airports, ref runways, ref navaids)) = self.cached_aviation_data {
+            (airports, runways, navaids)
+        } else {
+            (&Vec::new(), &Vec::new(), &Vec::new())
+        };
+
+        // Get aircraft list
+        let aircraft_list: Vec<Aircraft> = {
+            let tracker = self.tracker.lock().unwrap();
+            tracker.get_aircraft()
+        };
+
+        // Get trail settings
+        let time_limited_trails = self.tracker.lock().unwrap().get_time_limited_trails();
+
+        // Capture values needed inside closure
+        let show_airports = self.show_airports;
+        let show_runways = self.show_runways;
+        let show_navaids = self.show_navaids;
+        let airport_filter = self.airport_filter;
+        let selected_aircraft = self.selected_aircraft.clone();
+        let receiver_lat = self.receiver_lat;
+        let receiver_lon = self.receiver_lon;
+
+        // Create Walkers Map widget
+        let receiver_position = lat_lon(receiver_lat, receiver_lon);
+
+        use walkers::Map;
+
+        Map::new(
+            Some(&mut self.http_tiles),
+            &mut self.map_memory,
+            receiver_position,
+        )
+        .show(ui, |ui, projector, map_memory| {
+            let painter = ui.painter();
+            let rect = ui.max_rect();
+            let map_zoom_level = map_memory.zoom() as f32;
+
+            // Helper function using Walkers Projector
+            let to_screen = |lat: f64, lon: f64| -> egui::Pos2 {
+                let pos = lat_lon(lat, lon);
+                let screen_pos = projector.project(pos);
+                egui::pos2(screen_pos.x, screen_pos.y)
+            };
+
+            // Draw receiver location marker
+            let receiver_pos = to_screen(receiver_lat, receiver_lon);
+            if rect.contains(receiver_pos) {
+                painter.circle_filled(receiver_pos, 6.0, egui::Color32::from_rgb(100, 200, 100));
+                painter.circle_stroke(
+                    receiver_pos,
+                    6.0,
+                    egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 255, 200)),
+                );
+            }
+
+            // Draw aviation overlays
+            // Runways (draw first, under airports)
+            if show_runways && map_zoom_level >= 9.5 {
+                let max_runways = if map_zoom_level >= 11.0 { usize::MAX } else { 500 };
+                let mut runways_drawn = 0;
+
+                for (_airport_icao, runways) in airport_runways {
+                    if runways_drawn >= max_runways {
+                        break;
+                    }
+                    for runway in runways {
+                        if runways_drawn >= max_runways {
+                            break;
+                        }
+                        if let (Some(le_lat), Some(le_lon), Some(he_lat), Some(he_lon)) =
+                            (runway.le_latitude, runway.le_longitude, runway.he_latitude, runway.he_longitude)
+                        {
+                            let le_pos = to_screen(le_lat, le_lon);
+                            let he_pos = to_screen(he_lat, he_lon);
+
+                            if rect.contains(le_pos) || rect.contains(he_pos) {
+                                let runway_color = egui::Color32::from_rgb(80, 80, 100);
+                                painter.line_segment(
+                                    [le_pos, he_pos],
+                                    egui::Stroke::new(runway.stroke_width(), runway_color)
+                                );
+                                runways_drawn += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Airports with LOD optimization
+            if show_airports {
+                let max_airports = if map_zoom_level >= 10.0 {
+                    usize::MAX
+                } else if map_zoom_level >= 9.0 {
+                    1000
+                } else if map_zoom_level >= 8.0 {
+                    500
+                } else {
+                    200
+                };
+
+                let mut airports_drawn = 0;
+                let mut prioritized_airports: Vec<_> = visible_airports.iter().collect();
+                prioritized_airports.sort_by_key(|a| {
+                    if a.is_major() { 0 }
+                    else if a.is_medium() { 1 }
+                    else { 2 }
+                });
+
+                for airport in prioritized_airports {
+                    if airports_drawn >= max_airports {
+                        break;
+                    }
+
+                    let should_show = match airport_filter {
+                        AirportFilter::All => {
+                            airport.is_public_airplane_airport() &&
+                            (airport.is_major() || airport.is_medium() || map_zoom_level >= 9.5)
+                        }
+                        AirportFilter::FrequentlyUsed => {
+                            airport.is_frequently_used()
+                        }
+                        AirportFilter::MajorOnly => {
+                            airport.is_major()
+                        }
+                    };
+
+                    if !should_show {
+                        continue;
+                    }
+
+                    let pos = to_screen(airport.latitude, airport.longitude);
+
+                    if rect.contains(pos) {
+                        let airport_color = if airport.is_major() {
+                            egui::Color32::from_rgb(200, 100, 100)
+                        } else if airport.is_medium() {
+                            egui::Color32::from_rgb(150, 150, 100)
+                        } else {
+                            egui::Color32::from_rgb(120, 120, 120)
+                        };
+
+                        painter.circle_filled(pos, airport.render_radius(), airport_color);
+                        painter.circle_stroke(
+                            pos,
+                            airport.render_radius(),
+                            egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 255, 255)),
+                        );
+
+                        if map_zoom_level >= 9.0 {
+                            painter.text(
+                                pos + egui::vec2(0.0, -12.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                &airport.icao,
+                                egui::FontId::proportional(9.0),
+                                egui::Color32::from_rgb(220, 220, 220),
+                            );
+                        }
+
+                        airports_drawn += 1;
+                    }
+                }
+            }
+
+            // Navaids
+            if show_navaids && map_zoom_level >= 9.0 {
+                let max_navaids = if map_zoom_level >= 10.0 { 1000 } else { 300 };
+                let mut navaids_drawn = 0;
+
+                for navaid in visible_navaids {
+                    if navaids_drawn >= max_navaids {
+                        break;
+                    }
+
+                    let pos = to_screen(navaid.latitude, navaid.longitude);
+
+                    if rect.contains(pos) {
+                        let (r, g, b) = navaid.get_color();
+                        let navaid_color = egui::Color32::from_rgb(r, g, b);
+                        let size = navaid.symbol_size();
+
+                        let points = vec![
+                            pos + egui::vec2(0.0, -size),
+                            pos + egui::vec2(size * 0.866, size * 0.5),
+                            pos + egui::vec2(-size * 0.866, size * 0.5),
+                        ];
+                        painter.add(egui::Shape::convex_polygon(
+                            points,
+                            navaid_color,
+                            egui::Stroke::new(1.0, egui::Color32::WHITE),
+                        ));
+
+                        if map_zoom_level >= 10.0 {
+                            painter.text(
+                                pos + egui::vec2(0.0, size + 8.0),
+                                egui::Align2::CENTER_TOP,
+                                &navaid.ident,
+                                egui::FontId::proportional(8.0),
+                                navaid_color,
+                            );
+                        }
+
+                        navaids_drawn += 1;
+                    }
+                }
+            }
+
+            // Aircraft trails with LOD
+            let trail_detail_level = if map_zoom_level >= 10.0 {
+                1
+            } else if map_zoom_level >= 9.0 {
+                2
+            } else {
+                4
+            };
+
+            for aircraft in &aircraft_list {
+                aircraft.with_data(|data| {
+                    if data.position_history.is_empty() {
+                        return;
+                    }
+
+                    if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
+                        let screen_pos = to_screen(lat, lon);
+                        let margin = 100.0;
+                        let expanded_rect = rect.expand(margin);
+
+                        if !expanded_rect.contains(screen_pos) {
+                            return;
+                        }
+                    }
+
+                    let now = chrono::Utc::now();
+                    let mut points_drawn = 0;
+
+                    for i in (0..data.position_history.len()).step_by(trail_detail_level) {
+                        let point = &data.position_history[i];
+                        let age = (now - point.timestamp).num_milliseconds() as f32 / 1000.0;
+
+                        if time_limited_trails && age > TRAIL_MAX_AGE_SECONDS {
+                            continue;
+                        }
+
+                        let alpha = if time_limited_trails {
+                            if age <= TRAIL_SOLID_DURATION_SECONDS {
+                                255
+                            } else {
+                                let fade_age = age - TRAIL_SOLID_DURATION_SECONDS;
+                                let opacity = (1.0 - (fade_age / TRAIL_FADE_DURATION_SECONDS)).clamp(0.0, 1.0);
+                                (opacity * 255.0) as u8
+                            }
+                        } else {
+                            255
+                        };
+
+                        let trail_pos = to_screen(point.lat, point.lon);
+                        let next_idx = i + trail_detail_level;
+
+                        if next_idx < data.position_history.len() {
+                            let next_point = &data.position_history[next_idx];
+                            let next_age = (now - next_point.timestamp).num_milliseconds() as f32 / 1000.0;
+
+                            if !time_limited_trails || next_age <= TRAIL_MAX_AGE_SECONDS {
+                                let next_pos = to_screen(next_point.lat, next_point.lon);
+                                let (r, g, b) = Self::altitude_to_color(point.altitude);
+                                let trail_color = egui::Color32::from_rgba_unmultiplied(r, g, b, alpha);
+                                painter.line_segment(
+                                    [trail_pos, next_pos],
+                                    egui::Stroke::new(2.0, trail_color)
+                                );
+                                points_drawn += 1;
+                            }
+                        }
+
+                        if points_drawn >= 100 && map_zoom_level < 9.0 {
+                            break;
+                        }
+                    }
+
+                    // Line from last history to current position
+                    if let (Some(lat), Some(lon)) = (data.latitude, data.longitude) {
+                        if let Some(last_point) = data.position_history.last() {
+                            let last_pos = to_screen(last_point.lat, last_point.lon);
+                            let current_pos = to_screen(lat, lon);
+                            let (r, g, b) = Self::altitude_to_color(data.altitude);
+                            let trail_color = egui::Color32::from_rgb(r, g, b);
+                            painter.line_segment(
+                                [last_pos, current_pos],
+                                egui::Stroke::new(2.5, trail_color)
+                            );
+                        }
+                    }
+                });
+            }
+
+            // Aircraft icons and labels
+            for aircraft in &aircraft_list {
+                if let (Some(lat), Some(lon)) = (aircraft.latitude(), aircraft.longitude()) {
+                    let pos = to_screen(lat, lon);
+
+                    if rect.contains(pos) {
+                        let icao = aircraft.icao();
+                        let is_selected = selected_aircraft.as_ref() == Some(&icao);
+
+                        let (color, size) = if is_selected {
+                            (egui::Color32::from_rgb(255, 100, 100), 7.0)
+                        } else {
+                            (egui::Color32::from_rgb(120, 220, 120), 5.0)
+                        };
+
+                        let track = aircraft.track().unwrap_or(0.0) as f32;
+                        Self::draw_aircraft_icon(&painter, pos, track, color, size);
+
+                        if is_selected {
+                            painter.circle_stroke(
+                                pos,
+                                size * 1.8,
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 50)),
+                            );
+                        }
+
+                        // Callsign label with background
+                        let mut label_offset_y = -10.0;
+                        if let Some(ref callsign) = aircraft.callsign() {
+                            let text = callsign.trim();
+                            let text_pos = pos + egui::vec2(10.0, label_offset_y);
+                            let galley = painter.layout_no_wrap(
+                                text.to_string(),
+                                egui::FontId::proportional(11.0),
+                                egui::Color32::WHITE,
+                            );
+                            let padding = egui::vec2(3.0, 2.0);
+                            let box_rect = egui::Rect::from_min_size(
+                                text_pos - egui::vec2(padding.x, galley.size().y / 2.0 + padding.y),
+                                galley.size() + padding * 2.0,
+                            );
+                            painter.rect_filled(
+                                box_rect,
+                                2.0,
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+                            );
+                            painter.text(
+                                text_pos,
+                                egui::Align2::LEFT_CENTER,
+                                text,
+                                egui::FontId::proportional(11.0),
+                                egui::Color32::WHITE,
+                            );
+                            label_offset_y += 14.0;
+                        }
+
+                        // Altitude label
+                        if let Some(alt) = aircraft.altitude() {
+                            let alt_text = if alt >= 18000 {
+                                format!("FL{:03}", alt / 100)
+                            } else {
+                                format!("{}ft", alt)
+                            };
+                            let text_pos = pos + egui::vec2(10.0, label_offset_y);
+                            let galley = painter.layout_no_wrap(
+                                alt_text.clone(),
+                                egui::FontId::proportional(10.0),
+                                egui::Color32::from_rgb(200, 200, 200),
+                            );
+                            let padding = egui::vec2(3.0, 2.0);
+                            let box_rect = egui::Rect::from_min_size(
+                                text_pos - egui::vec2(padding.x, galley.size().y / 2.0 + padding.y),
+                                galley.size() + padding * 2.0,
+                            );
+                            painter.rect_filled(
+                                box_rect,
+                                2.0,
+                                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+                            );
+                            painter.text(
+                                text_pos,
+                                egui::Align2::LEFT_CENTER,
+                                &alt_text,
+                                egui::FontId::proportional(10.0),
+                                egui::Color32::from_rgb(200, 200, 200),
+                            );
+                        }
+                    }
+                }
+            }
+        });
+
+        // Update state from MapMemory after gestures
+        self.map_zoom_level = self.map_memory.zoom() as f32;
+    }
 }
 
 impl eframe::App for AdsbApp {
@@ -2644,7 +3167,7 @@ impl eframe::App for AdsbApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
-                self.draw_map(ui);
+                self.draw_map_walkers(ui);
             });
 
         // Docked aircraft list panel on the right with smooth collapse animation
