@@ -631,6 +631,8 @@ struct AdsbApp {
     aircraft_list_width: f32,
     // Store panel rect from previous frame to detect pointer position before rendering
     aircraft_list_rect: Option<egui::Rect>,
+    // Smoothed scroll zoom velocity for jitter-free zooming
+    scroll_zoom_velocity: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -880,6 +882,7 @@ impl AdsbApp {
             aircraft_list_expanded: config.aircraft_list_expanded,
             aircraft_list_width: config.aircraft_list_width,
             aircraft_list_rect: None,
+            scroll_zoom_velocity: 0.0,
         }
     }
 
@@ -2557,6 +2560,18 @@ impl AdsbApp {
         let receiver_lat = self.receiver_lat;
         let receiver_lon = self.receiver_lon;
 
+        // Capture scroll events for smooth scroll-to-zoom (when not over the panel)
+        let scroll_delta = if !pointer_over_panel {
+            ui.ctx().input(|i| i.smooth_scroll_delta)
+        } else {
+            egui::Vec2::ZERO
+        };
+
+        // Store zoom level and center before map widget processes gestures
+        // This allows us to detect and slow down pinch-to-zoom, and block panning
+        let zoom_before_map = self.map_memory.zoom();
+        let center_before_map = self.map_memory.detached().unwrap_or_else(|| lat_lon(self.receiver_lat, self.receiver_lon));
+
         // If pointer is over panel, temporarily hide scroll from the map
         // Save original values to restore them later for the panel
         let (saved_smooth_scroll, saved_raw_scroll) = if pointer_over_panel {
@@ -3021,6 +3036,62 @@ impl AdsbApp {
                             });
                     });
             }
+        }
+
+        // Handle smooth scroll-to-zoom with exponential smoothing to eliminate jitter
+        if scroll_delta.y.abs() > 0.1 {
+            // Apply exponential smoothing to scroll delta for smooth zoom
+            // smoothing_factor: 0 = no smoothing (jittery), 1 = max smoothing (sluggish)
+            let smoothing_factor = 0.7;
+
+            // Convert scroll to zoom velocity (positive = zoom in, negative = zoom out)
+            let target_velocity = scroll_delta.y / 300.0;
+
+            // Smooth the velocity using exponential moving average
+            self.scroll_zoom_velocity = self.scroll_zoom_velocity * smoothing_factor
+                                       + target_velocity * (1.0 - smoothing_factor);
+        } else {
+            // Decay velocity when no scroll input (smooth stop)
+            self.scroll_zoom_velocity *= 0.8;
+        }
+
+        // Apply smoothed scroll zoom
+        if self.scroll_zoom_velocity.abs() > 0.001 {
+            let current_zoom = self.map_memory.zoom();
+            let new_zoom = (current_zoom + self.scroll_zoom_velocity as f64).clamp(6.0, 18.0);
+            if let Err(e) = self.map_memory.set_zoom(new_zoom) {
+                eprintln!("Failed to set zoom: {:?}", e);
+            }
+        }
+
+        // Check if the map widget changed the zoom level (from pinch gesture)
+        let zoom_after_map = self.map_memory.zoom();
+        let map_zoom_change = zoom_after_map - zoom_before_map;
+
+        // Handle pinch-to-zoom with reduced sensitivity
+        // Only process if we didn't just apply scroll zoom (to avoid conflicts)
+        if map_zoom_change.abs() > 0.001 && scroll_delta.y.abs() < 0.1 {
+            // The map widget applied a zoom change from pinch gesture
+            // Scale it down to 30% of original speed for more control
+            let reduced_zoom_change = map_zoom_change * 0.3;
+            let final_zoom = zoom_before_map + reduced_zoom_change;
+
+            // Apply final zoom level (clamped to reasonable range)
+            let clamped_zoom = final_zoom.clamp(6.0, 18.0);
+            if let Err(e) = self.map_memory.set_zoom(clamped_zoom) {
+                eprintln!("Failed to set zoom: {:?}", e);
+            }
+        }
+
+        // Disable two-finger panning by restoring the map center after the widget processes gestures
+        // This blocks any panning that occurred during this frame
+        let center_after_map = self.map_memory.detached().unwrap_or_else(|| lat_lon(self.receiver_lat, self.receiver_lon));
+
+        // If the center changed (panning occurred), restore it to the previous center
+        if (center_after_map.x() - center_before_map.x()).abs() > 0.0001 ||
+           (center_after_map.y() - center_before_map.y()).abs() > 0.0001 {
+            // Reset center to prevent panning
+            self.map_memory.center_at(center_before_map);
         }
 
         // Restore scroll input for the panel (if we saved it)
