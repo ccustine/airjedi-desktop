@@ -629,6 +629,8 @@ struct AdsbApp {
     // Aircraft list panel state
     aircraft_list_expanded: bool,
     aircraft_list_width: f32,
+    // Store panel rect from previous frame to detect pointer position before rendering
+    aircraft_list_rect: Option<egui::Rect>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -877,6 +879,7 @@ impl AdsbApp {
             show_settings_window: false,
             aircraft_list_expanded: config.aircraft_list_expanded,
             aircraft_list_width: config.aircraft_list_width,
+            aircraft_list_rect: None,
         }
     }
 
@@ -1209,7 +1212,9 @@ impl AdsbApp {
             }
         });
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        let _scroll_area = egui::ScrollArea::vertical()
+            .auto_shrink([false, false]) // Don't shrink, always take full space
+            .show(ui, |ui| {
             ui.push_id("aircraft_list", |ui| {
                 for aircraft in aircraft_list {
                     // Trigger metadata fetch if not yet fetched
@@ -1471,6 +1476,9 @@ impl AdsbApp {
                 }
             });
         });
+
+        // The scroll area automatically consumes scroll events when pointer is over it
+        // Combined with the panel's input blocking layer, this prevents map zoom/pan conflicts
     }
 
     fn draw_map(&mut self, ui: &mut egui::Ui) {
@@ -2414,6 +2422,15 @@ impl AdsbApp {
     }
 
     fn draw_map_walkers(&mut self, ui: &mut egui::Ui) {
+        // Check if pointer is over the aircraft list panel (using rect from previous frame)
+        let pointer_over_panel = if let Some(panel_rect) = self.aircraft_list_rect {
+            ui.ctx().input(|i| {
+                i.pointer.hover_pos().map_or(false, |pos| panel_rect.contains(pos))
+            })
+        } else {
+            false
+        };
+
         // Sync zoom level from MapMemory
         self.map_zoom_level = self.map_memory.zoom() as f32;
 
@@ -2540,12 +2557,30 @@ impl AdsbApp {
         let receiver_lat = self.receiver_lat;
         let receiver_lon = self.receiver_lon;
 
+        // If pointer is over panel, temporarily hide scroll from the map
+        // Save original values to restore them later for the panel
+        let (saved_smooth_scroll, saved_raw_scroll) = if pointer_over_panel {
+            let saved = ui.ctx().input(|i| {
+                (i.smooth_scroll_delta, i.raw_scroll_delta)
+            });
+
+            // Clear scroll so map doesn't see it
+            ui.ctx().input_mut(|i| {
+                i.smooth_scroll_delta = egui::Vec2::ZERO;
+                i.raw_scroll_delta = egui::Vec2::ZERO;
+            });
+
+            (Some(saved.0), Some(saved.1))
+        } else {
+            (None, None)
+        };
+
         // Create Walkers Map widget
         let receiver_position = lat_lon(receiver_lat, receiver_lon);
 
         use walkers::Map;
 
-        Map::new(
+        let map_response = Map::new(
             Some(&mut self.http_tiles),
             &mut self.map_memory,
             receiver_position,
@@ -2904,6 +2939,14 @@ impl AdsbApp {
             }
         });
 
+        // Restore scroll input for the panel (if we saved it)
+        if let (Some(smooth), Some(raw)) = (saved_smooth_scroll, saved_raw_scroll) {
+            ui.ctx().input_mut(|i| {
+                i.smooth_scroll_delta = smooth;
+                i.raw_scroll_delta = raw;
+            });
+        }
+
         // Update state from MapMemory after gestures
         self.map_zoom_level = self.map_memory.zoom() as f32;
     }
@@ -3186,8 +3229,10 @@ impl eframe::App for AdsbApp {
         );
 
         // Configure panel differently based on expanded state
+        // Use a proper frame to ensure the panel blocks input events from reaching the map
         let panel = egui::SidePanel::right("aircraft_list_panel")
-            .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT));
+            .frame(egui::Frame::NONE
+                .fill(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 1))); // Almost transparent but not TRANSPARENT
 
         // Apply width constraints based on state
         let panel = if self.aircraft_list_expanded {
@@ -3203,6 +3248,12 @@ impl eframe::App for AdsbApp {
         };
 
         let panel_response = panel.show(ctx, |ui| {
+                // Get the full panel area to create an input-blocking layer
+                let panel_rect = ui.max_rect();
+
+                // Use interact() instead of allocate_rect() - this blocks input without consuming layout space
+                ui.interact(panel_rect, ui.id().with("panel_blocker"), egui::Sense::click_and_drag());
+
                 // Draw gradient background for sheen effect
                 let rect = ui.available_rect_before_wrap();
 
@@ -3288,6 +3339,9 @@ impl eframe::App for AdsbApp {
                     });
                 }
             });
+
+        // Store panel rect for next frame's pointer detection
+        self.aircraft_list_rect = Some(panel_response.response.rect);
 
         // Update panel width when user resizes (only when expanded)
         if self.aircraft_list_expanded {
