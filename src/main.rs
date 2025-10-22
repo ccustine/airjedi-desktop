@@ -634,6 +634,7 @@ struct AirjediApp {
     // UI window state
     show_map_overlays_window: bool,
     show_settings_window: bool,
+    show_filters_window: bool,
     // Aircraft list panel state
     aircraft_list_expanded: bool,
     aircraft_list_width: f32,
@@ -971,6 +972,7 @@ impl AirjediApp {
             server_edit_state: std::collections::HashMap::new(),
             show_map_overlays_window: false,
             show_settings_window: false,
+            show_filters_window: false,
             aircraft_list_expanded: config.aircraft_list_expanded,
             aircraft_list_width: config.aircraft_list_width,
             aircraft_list_rect: None,
@@ -1065,110 +1067,13 @@ impl AirjediApp {
 
         ui.add_space(2.0);
 
-        // Filters & Sort Controls
-        egui::CollapsingHeader::new(egui::RichText::new("⚙ FILTERS & SORT")
+        // Sort Controls (Filters moved to separate window)
+        egui::CollapsingHeader::new(egui::RichText::new("⚙ SORT")
             .color(egui::Color32::from_rgb(100, 200, 200))
             .size(11.0)
             .strong())
             .default_open(false)
             .show(ui, |ui| {
-                // Enable/Disable filters toggle
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.filters_enabled, "");
-                    ui.label(egui::RichText::new("Enable Filters")
-                        .color(egui::Color32::from_rgb(180, 180, 180))
-                        .size(10.0));
-                });
-
-                ui.add_space(4.0);
-
-                // Altitude filter
-                ui.label(egui::RichText::new("Altitude (ft)")
-                    .color(egui::Color32::from_rgb(150, 200, 200))
-                    .size(9.0));
-                ui.horizontal(|ui| {
-                    ui.add(egui::Slider::new(&mut self.filter_altitude_min, 0.0..=50000.0)
-                        .text("Min")
-                        .show_value(true));
-                });
-                ui.horizontal(|ui| {
-                    ui.add(egui::Slider::new(&mut self.filter_altitude_max, 0.0..=50000.0)
-                        .text("Max")
-                        .show_value(true));
-                });
-
-                ui.add_space(2.0);
-
-                // Speed filter
-                ui.label(egui::RichText::new("Speed (kts)")
-                    .color(egui::Color32::from_rgb(150, 200, 200))
-                    .size(9.0));
-                ui.horizontal(|ui| {
-                    ui.add(egui::Slider::new(&mut self.filter_speed_min, 0.0..=600.0)
-                        .text("Min")
-                        .show_value(true));
-                });
-                ui.horizontal(|ui| {
-                    ui.add(egui::Slider::new(&mut self.filter_speed_max, 0.0..=600.0)
-                        .text("Max")
-                        .show_value(true));
-                });
-
-                ui.add_space(2.0);
-
-                // Range filter
-                ui.label(egui::RichText::new("Range (nm)")
-                    .color(egui::Color32::from_rgb(150, 200, 200))
-                    .size(9.0));
-                ui.horizontal(|ui| {
-                    ui.add(egui::Slider::new(&mut self.filter_range_min, 0.0..=400.0)
-                        .text("Min")
-                        .show_value(true));
-                });
-                ui.horizontal(|ui| {
-                    ui.add(egui::Slider::new(&mut self.filter_range_max, 0.0..=400.0)
-                        .text("Max")
-                        .show_value(true));
-                });
-
-                ui.add_space(2.0);
-
-                // ICAO filter
-                ui.label(egui::RichText::new("ICAO")
-                    .color(egui::Color32::from_rgb(150, 200, 200))
-                    .size(9.0));
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.filter_icao)
-                        .hint_text("e.g., A1234")
-                        .desired_width(150.0));
-                    if !self.filter_icao.is_empty() {
-                        if ui.small_button("✖").clicked() {
-                            self.filter_icao.clear();
-                        }
-                    }
-                });
-
-                ui.add_space(2.0);
-
-                // Registration filter
-                ui.label(egui::RichText::new("Registration")
-                    .color(egui::Color32::from_rgb(150, 200, 200))
-                    .size(9.0));
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.filter_registration)
-                        .hint_text("e.g., N12345")
-                        .desired_width(150.0));
-                    if !self.filter_registration.is_empty() {
-                        if ui.small_button("✖").clicked() {
-                            self.filter_registration.clear();
-                        }
-                    }
-                });
-
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(2.0);
-
                 // Sort by
                 ui.label(egui::RichText::new("Sort By")
                     .color(egui::Color32::from_rgb(150, 200, 200))
@@ -1178,6 +1083,8 @@ impl AirjediApp {
                     ui.radio_value(&mut self.sort_by, SortCriterion::Speed, "Speed");
                     ui.radio_value(&mut self.sort_by, SortCriterion::Range, "Range");
                 });
+
+                ui.add_space(2.0);
 
                 // Sort direction
                 ui.horizontal(|ui| {
@@ -1194,21 +1101,6 @@ impl AirjediApp {
                         };
                     }
                 });
-
-                ui.add_space(2.0);
-
-                // Reset filters button
-                if ui.button("Reset Filters").clicked() {
-                    self.filters_enabled = false;
-                    self.filter_altitude_min = 0.0;
-                    self.filter_altitude_max = 50000.0;
-                    self.filter_speed_min = 0.0;
-                    self.filter_speed_max = 600.0;
-                    self.filter_range_min = 0.0;
-                    self.filter_range_max = 400.0;
-                    self.filter_registration.clear();
-                    self.filter_icao.clear();
-                }
             });
 
         ui.add_space(4.0);
@@ -1660,7 +1552,7 @@ impl AirjediApp {
         );
     }
 
-    fn draw_map_walkers(&mut self, ui: &mut egui::Ui) {
+    fn draw_map(&mut self, ui: &mut egui::Ui) {
         // Check if pointer is over the aircraft list panel (using rect from previous frame)
         let pointer_over_panel = if let Some(panel_rect) = self.aircraft_list_rect {
             ui.ctx().input(|i| {
@@ -2335,6 +2227,21 @@ impl AirjediApp {
                             {
                                 self.show_map_overlays_window = !self.show_map_overlays_window;
                             }
+
+                            // Filters button (funnel icon)
+                            let filters_button = egui::Button::new(
+                                egui::RichText::new("▼")
+                                    .size(18.0)
+                                    .color(egui::Color32::from_rgb(180, 180, 180))
+                            )
+                            .fill(egui::Color32::from_rgba_unmultiplied(45, 50, 55, 150));
+
+                            if ui.add(filters_button)
+                                .on_hover_text("Filters")
+                                .clicked()
+                            {
+                                self.show_filters_window = !self.show_filters_window;
+                            }
                         });
                     });
             });
@@ -2744,6 +2651,9 @@ impl eframe::App for AirjediApp {
                     if ui.button("Map Overlays...").clicked() {
                         self.show_map_overlays_window = true;
                     }
+                    if ui.button("Filters...").clicked() {
+                        self.show_filters_window = true;
+                    }
                     ui.separator();
                     // Aircraft List with checkmark and keyboard shortcut
                     let aircraft_list_text = if self.aircraft_list_expanded {
@@ -2775,7 +2685,7 @@ impl eframe::App for AirjediApp {
                 if self.startup_state != StartupState::Complete {
                     self.draw_loading_screen(ui, ctx);
                 } else {
-                    self.draw_map_walkers(ui);
+                    self.draw_map(ui);
                 }
             });
 
@@ -3235,6 +3145,128 @@ impl eframe::App for AirjediApp {
                         .size(8.0)
                         .color(egui::Color32::from_rgb(120, 120, 120))
                         .monospace());
+                }
+            });
+
+        // Filters window (only shown when opened from View menu)
+        egui::Window::new("Filters")
+            .resizable(false)
+            .collapsible(false)
+            .open(&mut self.show_filters_window)
+            .show(ctx, |ui| {
+                // Enable/Disable filters toggle
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.filters_enabled, "");
+                    ui.label(egui::RichText::new("Enable Filters")
+                        .color(egui::Color32::from_rgb(180, 180, 180))
+                        .size(10.0));
+                });
+
+                ui.add_space(8.0);
+
+                // Altitude filter
+                ui.label(egui::RichText::new("Altitude (ft)")
+                    .color(egui::Color32::from_rgb(150, 200, 200))
+                    .size(10.0)
+                    .strong());
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.filter_altitude_min, 0.0..=50000.0)
+                        .text("Min")
+                        .show_value(true));
+                });
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.filter_altitude_max, 0.0..=50000.0)
+                        .text("Max")
+                        .show_value(true));
+                });
+
+                ui.add_space(6.0);
+
+                // Speed filter
+                ui.label(egui::RichText::new("Speed (kts)")
+                    .color(egui::Color32::from_rgb(150, 200, 200))
+                    .size(10.0)
+                    .strong());
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.filter_speed_min, 0.0..=600.0)
+                        .text("Min")
+                        .show_value(true));
+                });
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.filter_speed_max, 0.0..=600.0)
+                        .text("Max")
+                        .show_value(true));
+                });
+
+                ui.add_space(6.0);
+
+                // Range filter
+                ui.label(egui::RichText::new("Range (nm)")
+                    .color(egui::Color32::from_rgb(150, 200, 200))
+                    .size(10.0)
+                    .strong());
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.filter_range_min, 0.0..=400.0)
+                        .text("Min")
+                        .show_value(true));
+                });
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.filter_range_max, 0.0..=400.0)
+                        .text("Max")
+                        .show_value(true));
+                });
+
+                ui.add_space(6.0);
+
+                // ICAO filter
+                ui.label(egui::RichText::new("ICAO")
+                    .color(egui::Color32::from_rgb(150, 200, 200))
+                    .size(10.0)
+                    .strong());
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.filter_icao)
+                        .hint_text("e.g., A1234")
+                        .desired_width(200.0));
+                    if !self.filter_icao.is_empty() {
+                        if ui.small_button("✖").clicked() {
+                            self.filter_icao.clear();
+                        }
+                    }
+                });
+
+                ui.add_space(6.0);
+
+                // Registration filter
+                ui.label(egui::RichText::new("Registration")
+                    .color(egui::Color32::from_rgb(150, 200, 200))
+                    .size(10.0)
+                    .strong());
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.filter_registration)
+                        .hint_text("e.g., N12345")
+                        .desired_width(200.0));
+                    if !self.filter_registration.is_empty() {
+                        if ui.small_button("✖").clicked() {
+                            self.filter_registration.clear();
+                        }
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                // Reset filters button
+                if ui.button("Reset All Filters").clicked() {
+                    self.filters_enabled = false;
+                    self.filter_altitude_min = 0.0;
+                    self.filter_altitude_max = 50000.0;
+                    self.filter_speed_min = 0.0;
+                    self.filter_speed_max = 600.0;
+                    self.filter_range_min = 0.0;
+                    self.filter_range_max = 400.0;
+                    self.filter_registration.clear();
+                    self.filter_icao.clear();
                 }
             });
 
