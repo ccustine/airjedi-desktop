@@ -19,6 +19,7 @@ mod aircraft_types;
 mod basestation;
 mod carto_tiles;
 mod config;
+mod connection_manager;
 mod photo_cache;
 mod status;
 mod status_pane;
@@ -29,7 +30,7 @@ use aircraft_db::AircraftDatabase;
 use aircraft_types::AircraftTypeDatabase;
 use aircraft_metadata::MetadataService;
 use aviation_data::{AviationData, Airport, Navaid};
-use basestation::{Aircraft, AircraftTracker};
+use basestation::Aircraft;
 use carto_tiles::CartoTileSource;
 use clap::Parser;
 use eframe::egui;
@@ -39,7 +40,6 @@ use status_pane::StatusPane;
 use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use tiles::{TileManager, WebMercator};
-use tokio::sync::watch;
 use config::DEFAULT_SERVER_ADDRESS;
 use walkers::{HttpTiles, MapMemory, HttpOptions, lat_lon};
 
@@ -201,12 +201,21 @@ fn main() -> Result<(), eframe::Error> {
 
     // CLI args override config file
     if args.server != DEFAULT_SERVER_ADDRESS {
-        // User provided a non-default server, override config
-        config.server_address = args.server.clone();
+        // User provided a non-default server via CLI
+        // Replace the first server or add if none exist
+        if let Some(first_server) = config.servers.first_mut() {
+            first_server.address = args.server.clone();
+            first_server.enabled = true;
+        } else {
+            config.servers.push(config::ServerConfig::new(
+                "CLI Server".to_string(),
+                args.server.clone(),
+                true,
+            ));
+        }
     }
 
     println!("Starting AirJedi Desktop...");
-    println!("Connecting to SBS-1 server at: {}", config.server_address);
 
     // Display config file path
     if let Ok(config_path) = config::AppConfig::get_config_path() {
@@ -226,7 +235,7 @@ fn main() -> Result<(), eframe::Error> {
         options,
         Box::new(move |cc| {
             println!("Creating application...");
-            Ok(Box::new(AdsbApp::new(config, &cc.egui_ctx)))
+            Ok(Box::new(AirjediApp::new(config, &cc.egui_ctx)))
         }),
     )
 }
@@ -408,7 +417,7 @@ impl MapItemPopup for Aircraft {
 
             // Altitude with color coding
             if let Some(alt) = data.altitude {
-                let (r, g, b) = AdsbApp::altitude_to_color(Some(alt));
+                let (r, g, b) = AirjediApp::altitude_to_color(Some(alt));
                 let alt_color = egui::Color32::from_rgb(r, g, b);
 
                 ui.horizontal(|ui| {
@@ -557,13 +566,15 @@ enum StartupState {
     Complete,
 }
 
-struct AdsbApp {
-    tracker: Arc<Mutex<AircraftTracker>>,
+struct AirjediApp {
+    connection_manager: Arc<Mutex<connection_manager::ConnectionManager>>,
     map_center_lat: f64,
     map_center_lon: f64,
     receiver_lat: f64,
     receiver_lon: f64,
     map_zoom_level: f32, // Float for smoother pinch-zoom
+    // Loading screen
+    logo_texture: Option<egui::TextureHandle>,
     // Walkers tile management
     http_tiles: HttpTiles,
     map_memory: MapMemory,
@@ -616,13 +627,10 @@ struct AdsbApp {
     // Auto-pan to selected aircraft
     stored_map_center: Option<(f64, f64)>, // (lat, lon) before auto-pan
     following_aircraft: bool, // Whether we've auto-panned to an aircraft
-    // SBS-1 server configuration
-    server_address: String,
-    server_address_tx: Option<watch::Sender<String>>, // Channel to notify TCP client of address changes
     // Application configuration
     config: config::AppConfig,
-    // Settings UI state
-    settings_server_edit: String, // Edited server address (for UI text field)
+    // Server UI edit state (server_id -> (name, address))
+    server_edit_state: std::collections::HashMap<String, (String, String)>,
     // UI window state
     show_map_overlays_window: bool,
     show_settings_window: bool,
@@ -667,7 +675,7 @@ impl Default for SortDirection {
     }
 }
 
-impl AdsbApp {
+impl AirjediApp {
     // Draw an airplane icon at the given position with rotation based on track angle
     fn draw_aircraft_icon(
         painter: &egui::Painter,
@@ -721,6 +729,67 @@ impl AdsbApp {
         ));
     }
 
+    // Load the AirJedi logo SVG for the loading screen
+    fn load_logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+        // Read SVG file from disk
+        let svg_path = "assets/airjedi.svg";
+        match std::fs::read(svg_path) {
+            Ok(svg_bytes) => {
+                // Parse SVG tree
+                let opt = usvg::Options::default();
+                match usvg::Tree::from_data(&svg_bytes, &opt) {
+                    Ok(tree) => {
+                        // Render at high resolution (2048x2048) for crisp scaling
+                        let target_size = 2048;
+                        let svg_size = tree.size();
+
+                        // Calculate scale to fit SVG into target size while preserving aspect ratio
+                        let scale = (target_size as f32 / svg_size.width().max(svg_size.height())).min(target_size as f32);
+
+                        let width = (svg_size.width() * scale) as u32;
+                        let height = (svg_size.height() * scale) as u32;
+
+                        // Create pixmap for rendering
+                        let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height).unwrap();
+
+                        // Render SVG to pixmap
+                        let transform = resvg::tiny_skia::Transform::from_scale(scale, scale);
+                        resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+                        // Convert pixmap to egui ColorImage
+                        let pixels = pixmap.pixels();
+                        let rgba_pixels: Vec<egui::Color32> = pixels.iter()
+                            .map(|p| egui::Color32::from_rgba_premultiplied(p.red(), p.green(), p.blue(), p.alpha()))
+                            .collect();
+
+                        let color_image = egui::ColorImage {
+                            size: [width as usize, height as usize],
+                            source_size: egui::vec2(width as f32, height as f32),
+                            pixels: rgba_pixels,
+                        };
+
+                        // Upload as texture with LINEAR filtering for smooth scaling
+                        let texture = ctx.load_texture(
+                            "airjedi_logo",
+                            color_image,
+                            egui::TextureOptions::LINEAR
+                        );
+                        println!("Logo SVG loaded successfully at {}x{}", width, height);
+                        Some(texture)
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to parse SVG tree: {}", e);
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to read logo SVG from {}: {}", svg_path, e);
+                None
+            }
+        }
+    }
+
     // Convert altitude to continuous color gradient
     // Low altitude (cyan) -> High altitude (purple) with smooth blending
     fn altitude_to_color(altitude_ft: Option<i32>) -> (u8, u8, u8) {
@@ -761,12 +830,41 @@ impl AdsbApp {
         (150, 50, 255)
     }
 
+    /// Convert HSL to RGB (hue 0-360, saturation 0-1, lightness 0-1)
+    fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> (u8, u8, u8) {
+        let c = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+        let x = c * (1.0 - ((hue / 60.0) % 2.0 - 1.0).abs());
+        let m = lightness - c / 2.0;
+
+        let (r, g, b) = match hue {
+            h if h < 60.0 => (c, x, 0.0),
+            h if h < 120.0 => (x, c, 0.0),
+            h if h < 180.0 => (0.0, c, x),
+            h if h < 240.0 => (0.0, x, c),
+            h if h < 300.0 => (x, 0.0, c),
+            _ => (c, 0.0, x),
+        };
+
+        (
+            ((r + m) * 255.0) as u8,
+            ((g + m) * 255.0) as u8,
+            ((b + m) * 255.0) as u8,
+        )
+    }
+
     fn new(config: config::AppConfig, egui_ctx: &egui::Context) -> Self {
         println!("Initializing ADSB app...");
 
+        // Load logo for loading screen
+        let logo_texture = Self::load_logo_texture(egui_ctx);
+
         // Initialize core structures
-        let tracker = Arc::new(Mutex::new(AircraftTracker::new()));
         let system_status = Arc::new(Mutex::new(SystemStatus::new()));
+
+        // Initialize ConnectionManager (connections will be started in startup sequence)
+        let connection_manager = Arc::new(Mutex::new(
+            connection_manager::ConnectionManager::new(system_status.clone(), 37.7749, -122.4194)
+        ));
         let aviation_data = Arc::new(Mutex::new(AviationData::new()));
         let aviation_data_loading = Arc::new(Mutex::new(true));
         let aircraft_db = Arc::new(Mutex::new(AircraftDatabase::new()));
@@ -798,9 +896,6 @@ impl AdsbApp {
             eprintln!("Warning: Failed to load aircraft types: {}", e);
         }
 
-        // Wire up status tracking in the tracker for position update sparkline
-        tracker.lock().unwrap().set_status(system_status.clone());
-
         // Use default location initially - will be updated during startup sequence
         let default_lat = 37.7749;
         let default_lon = -122.4194;
@@ -820,15 +915,14 @@ impl AdsbApp {
 
         println!("App structure initialized - startup will continue in first frames");
 
-        let server_address = config.server_address.clone();
-
         Self {
-            tracker,
+            connection_manager,
             map_center_lat: default_lat,
             map_center_lon: default_lon,
             receiver_lat: default_lat,
             receiver_lon: default_lon,
             map_zoom_level: config.default_zoom,
+            logo_texture,
             http_tiles,
             map_memory,
             tile_manager: TileManager::new(),
@@ -873,10 +967,8 @@ impl AdsbApp {
             // Auto-pan state
             stored_map_center: None,
             following_aircraft: false,
-            server_address: server_address.clone(),
-            server_address_tx: None, // Will be set when TCP client thread is spawned
-            settings_server_edit: server_address,
             config: config.clone(),
+            server_edit_state: std::collections::HashMap::new(),
             show_map_overlays_window: false,
             show_settings_window: false,
             aircraft_list_expanded: config.aircraft_list_expanded,
@@ -899,7 +991,7 @@ impl AdsbApp {
 
         let aircraft_db = self.aircraft_db.clone();
         let metadata_service = self.metadata_service.clone();
-        let tracker = self.tracker.clone();
+        let connection_manager = self.connection_manager.clone();
         let pending_metadata = self.pending_metadata.clone();
 
         // Spawn background thread with its own tokio runtime
@@ -920,20 +1012,18 @@ impl AdsbApp {
                 };
 
                 // Update aircraft with metadata using the new API
-                if let Ok(tracker) = tracker.lock() {
-                    if let Some(aircraft) = tracker.get_aircraft_by_icao(&icao) {
-                        aircraft.with_data_mut(|data| {
-                            data.registration = registration;
-                            data.aircraft_type = aircraft_type;
-                            data.metadata_fetched = true;
+                if let Some(aircraft) = connection_manager.lock().unwrap().get_aircraft_by_icao(&icao) {
+                    aircraft.with_data_mut(|data| {
+                        data.registration = registration;
+                        data.aircraft_type = aircraft_type;
+                        data.metadata_fetched = true;
 
-                            if let Some(metadata) = photo_metadata {
-                                data.photo_url = metadata.photo_url;
-                                data.photo_thumbnail_url = metadata.photo_thumbnail_url;
-                                data.photographer = metadata.photographer;
-                            }
-                        });
-                    }
+                        if let Some(metadata) = photo_metadata {
+                            data.photo_url = metadata.photo_url;
+                            data.photo_thumbnail_url = metadata.photo_thumbnail_url;
+                            data.photographer = metadata.photographer;
+                        }
+                    });
                 }
 
                 // Remove from pending
@@ -945,9 +1035,9 @@ impl AdsbApp {
     fn draw_aircraft_list(&mut self, ui: &mut egui::Ui) {
         // Get aircraft list with cheap Arc clones - no expensive deep copying!
         let aircraft_data: Vec<Aircraft> = {
-            let tracker = self.tracker.lock()
-                .expect("Aircraft tracker mutex poisoned");
-            tracker.get_aircraft()  // Returns Vec<Aircraft> where Aircraft is Arc<RwLock<...>>
+            let connection_manager = self.connection_manager.lock()
+                .expect("Connection manager mutex poisoned");
+            connection_manager.get_all_aircraft_merged()  // Returns Vec<Aircraft> merged from all servers
         };
 
         let total_count = aircraft_data.len();
@@ -1289,6 +1379,20 @@ impl AdsbApp {
                                             .color(callsign_color)
                                             .size(10.5)
                                             .strong());
+
+                                        // Server badge - show which server this aircraft came from
+                                        let server_name = aircraft.source_server_name();
+                                        if !server_name.is_empty() {
+                                            // Generate consistent color based on server name hash
+                                            let hash = server_name.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+                                            let hue = (hash % 360) as f32;
+                                            let (r, g, b) = Self::hsl_to_rgb(hue, 0.6, 0.5);
+
+                                            ui.label(egui::RichText::new(format!("[{}]", server_name))
+                                                .color(egui::Color32::from_rgb(r, g, b))
+                                                .size(7.0))
+                                                .on_hover_text(format!("Source: {}", server_name));
+                                        }
                                     }
 
                                     if let Some(alt) = aircraft.altitude() {
@@ -1484,6 +1588,78 @@ impl AdsbApp {
         // Combined with the panel's input blocking layer, this prevents map zoom/pan conflicts
     }
 
+    fn draw_loading_screen(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // Allocate full screen space
+        let (_, painter) = ui.allocate_painter(
+            egui::vec2(ui.available_width(), ui.available_height()),
+            egui::Sense::hover(),
+        );
+
+        let rect = ui.max_rect();
+        let center = rect.center();
+
+        // Draw dark background matching map theme
+        painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(15, 18, 20));
+
+        // Draw logo if loaded
+        if let Some(ref logo) = self.logo_texture {
+            // Get time for animation
+            let time = ctx.input(|i| i.time);
+
+            // Pulsing/breathing animation - smooth sinusoidal scale
+            // Cycle: 2 seconds, scale range: 1.0 -> 1.1 -> 1.0
+            let pulse = (time * std::f64::consts::PI).sin(); // -1 to 1
+            let scale = 1.0 + 0.05 * pulse; // 0.95 to 1.05
+
+            // Logo size - scale based on screen size but keep reasonable
+            let logo_base_size = rect.height().min(rect.width()) * 0.3; // 30% of smallest dimension
+            let logo_size = logo_base_size * scale as f32;
+
+            // Center the logo
+            let logo_rect = egui::Rect::from_center_size(
+                center,
+                egui::vec2(logo_size, logo_size),
+            );
+
+            // Draw the logo texture with opacity for polish
+            painter.image(
+                logo.id(),
+                logo_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+
+        // Display loading status text below logo
+        let status_text = match self.startup_state {
+            StartupState::InitializingWindow => "Initializing...",
+            StartupState::DetectingLocation => "Detecting location...",
+            StartupState::StartingTcpClient => "Starting ADS-B client...",
+            StartupState::LoadingAviationData => "Loading aviation data...",
+            StartupState::LoadingAircraftDB => "Loading aircraft database...",
+            StartupState::Complete => "Ready",
+        };
+
+        let text_pos = center + egui::vec2(0.0, rect.height() * 0.2);
+        painter.text(
+            text_pos,
+            egui::Align2::CENTER_CENTER,
+            status_text,
+            egui::FontId::proportional(16.0),
+            egui::Color32::from_rgb(150, 180, 200),
+        );
+
+        // App name/title above the logo
+        let title_pos = center - egui::vec2(0.0, rect.height() * 0.25);
+        painter.text(
+            title_pos,
+            egui::Align2::CENTER_CENTER,
+            "AirJedi Desktop",
+            egui::FontId::proportional(24.0),
+            egui::Color32::from_rgb(100, 200, 200),
+        );
+    }
+
     fn draw_map(&mut self, ui: &mut egui::Ui) {
         // Allocate space for the map
         let (response, painter) = ui.allocate_painter(
@@ -1511,8 +1687,8 @@ impl AdsbApp {
             if is_new_selection && !self.following_aircraft {
                 // Get the selected aircraft
                 let aircraft_opt = {
-                    let tracker = self.tracker.lock().unwrap();
-                    tracker.get_aircraft_by_icao(selected_icao)
+                    let connection_manager = self.connection_manager.lock().unwrap();
+                    connection_manager.get_aircraft_by_icao(selected_icao)
                 };
 
                 if let Some(aircraft) = aircraft_opt {
@@ -2035,9 +2211,9 @@ impl AdsbApp {
 
         // Get aircraft with cheap Arc clones - eliminates the second expensive clone!
         let aircraft_list: Vec<Aircraft> = {
-            let tracker = self.tracker.lock()
-                .expect("Aircraft tracker mutex poisoned");
-            tracker.get_aircraft()  // Now returns Vec<Aircraft> with Arc clones
+            let connection_manager = self.connection_manager.lock()
+                .expect("Connection manager mutex poisoned");
+            connection_manager.get_all_aircraft_merged()  // Returns Vec<Aircraft> merged from all servers
         };
 
         // PERFORMANCE: Trail rendering with aggressive LOD optimization
@@ -2052,7 +2228,7 @@ impl AdsbApp {
         };
 
         // Get time-limited trails setting once to avoid repeated locking
-        let time_limited_trails = self.tracker.lock().unwrap().get_time_limited_trails();
+        let time_limited_trails = self.connection_manager.lock().unwrap().get_time_limited_trails();
 
         for aircraft in &aircraft_list {
             // Draw trail first (so aircraft appears on top)
@@ -2448,8 +2624,8 @@ impl AdsbApp {
 
             if is_new_selection && !self.following_aircraft {
                 let aircraft_opt = {
-                    let tracker = self.tracker.lock().unwrap();
-                    tracker.get_aircraft_by_icao(selected_icao)
+                    let connection_manager = self.connection_manager.lock().unwrap();
+                    connection_manager.get_aircraft_by_icao(selected_icao)
                 };
 
                 if let Some(aircraft) = aircraft_opt {
@@ -2544,12 +2720,12 @@ impl AdsbApp {
 
         // Get aircraft list
         let aircraft_list: Vec<Aircraft> = {
-            let tracker = self.tracker.lock().unwrap();
-            tracker.get_aircraft()
+            let connection_manager = self.connection_manager.lock().unwrap();
+            connection_manager.get_all_aircraft_merged()
         };
 
         // Get trail settings
-        let time_limited_trails = self.tracker.lock().unwrap().get_time_limited_trails();
+        let time_limited_trails = self.connection_manager.lock().unwrap().get_time_limited_trails();
 
         // Capture values needed inside closure
         let show_airports = self.show_airports;
@@ -3045,6 +3221,52 @@ impl AdsbApp {
             }
         }
 
+        // Floating toolbar in top-left corner
+        egui::Area::new("map_toolbar".into())
+            .fixed_pos(egui::pos2(10.0, 35.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgba_unmultiplied(25, 30, 35, 200))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::same(6))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+
+                            // Settings button (cog icon)
+                            let settings_button = egui::Button::new(
+                                egui::RichText::new("⚙")
+                                    .size(18.0)
+                                    .color(egui::Color32::from_rgb(180, 180, 180))
+                            )
+                            .fill(egui::Color32::from_rgba_unmultiplied(45, 50, 55, 150));
+
+                            if ui.add(settings_button)
+                                .on_hover_text("Settings")
+                                .clicked()
+                            {
+                                self.show_settings_window = !self.show_settings_window;
+                            }
+
+                            // Map overlays button (layers icon)
+                            let overlays_button = egui::Button::new(
+                                egui::RichText::new("☰")
+                                    .size(18.0)
+                                    .color(egui::Color32::from_rgb(180, 180, 180))
+                            )
+                            .fill(egui::Color32::from_rgba_unmultiplied(45, 50, 55, 150));
+
+                            if ui.add(overlays_button)
+                                .on_hover_text("Map Overlays")
+                                .clicked()
+                            {
+                                self.show_map_overlays_window = !self.show_map_overlays_window;
+                            }
+                        });
+                    });
+            });
+
         // Handle smooth scroll-to-zoom with exponential smoothing and cursor-centered behavior
         if scroll_delta.y.abs() > 0.1 {
             // Apply exponential smoothing to scroll delta for smooth zoom
@@ -3192,7 +3414,7 @@ impl AdsbApp {
     }
 }
 
-impl eframe::App for AdsbApp {
+impl eframe::App for AirjediApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let frame_start = std::time::Instant::now();
 
@@ -3250,8 +3472,8 @@ impl eframe::App for AdsbApp {
                     self.receiver_lat = lat;
                     self.receiver_lon = lon;
 
-                    // Set the center location in the tracker for distance filtering
-                    self.tracker.lock().unwrap().set_center(lat, lon);
+                    // Set the center location in ConnectionManager for distance filtering
+                    self.connection_manager.lock().unwrap().set_center(lat, lon);
 
                     self.system_status.lock().unwrap().add_diagnostic(
                         DiagnosticLevel::Info,
@@ -3261,24 +3483,17 @@ impl eframe::App for AdsbApp {
                     self.startup_state = StartupState::StartingTcpClient;
                 }
                 StartupState::StartingTcpClient => {
-                    // Spawn TCP connection in background
+                    // Initialize all enabled servers from config
                     self.system_status.lock().unwrap().add_diagnostic(
                         DiagnosticLevel::Info,
-                        format!("Starting TCP client (connecting to {})...", self.server_address)
+                        "Initializing server connections...".to_string()
                     );
 
-                    // Create watch channel for server address hot-reload
-                    let (server_tx, server_rx) = watch::channel(self.server_address.clone());
-
-                    // Store sender for later use in Settings UI
-                    self.server_address_tx = Some(server_tx);
-
-                    let tracker_clone = self.tracker.clone();
-                    let status_clone = self.system_status.clone();
-                    std::thread::spawn(move || {
-                        let rt = tokio::runtime::Runtime::new().unwrap();
-                        rt.block_on(tcp_client::connect_adsb_feed(server_rx, tracker_clone, status_clone));
-                    });
+                    // Add all configured servers to the ConnectionManager
+                    let mut connection_manager = self.connection_manager.lock().unwrap();
+                    for server in &self.config.servers {
+                        connection_manager.add_server(server.clone());
+                    }
 
                     self.startup_state = StartupState::LoadingAviationData;
                 }
@@ -3370,12 +3585,15 @@ impl eframe::App for AdsbApp {
 
         // Update system status with current aircraft stats
         {
-            let tracker = self.tracker.lock().unwrap();
-            let aircraft_list = tracker.get_aircraft();  // Cheap Arc clones
+            let connection_manager = self.connection_manager.lock().unwrap();
+            let aircraft_list = connection_manager.get_all_aircraft_merged();  // Cheap Arc clones from all servers
             let total = aircraft_list.len();
             let active = aircraft_list.iter().filter(|a| {
                 (chrono::Utc::now() - a.last_seen()).num_seconds() < 60
             }).count();
+
+            // Update per-server aircraft counts
+            connection_manager.update_all_status_aircraft_counts();
 
             self.system_status.lock().unwrap().update_aircraft_stats(total, active);
             self.system_status.lock().unwrap().update_uptime();
@@ -3446,11 +3664,16 @@ impl eframe::App for AdsbApp {
             });
         });
 
-        // Map takes full width
+        // Map takes full width (or loading screen during startup)
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
-                self.draw_map_walkers(ui);
+                // Show loading screen until startup is complete
+                if self.startup_state != StartupState::Complete {
+                    self.draw_loading_screen(ui, ctx);
+                } else {
+                    self.draw_map_walkers(ui);
+                }
             });
 
         // Docked aircraft list panel on the right with smooth collapse animation
@@ -3664,8 +3887,8 @@ impl eframe::App for AdsbApp {
                         ui.label("Time-Limited Trails:");
                         if ui.checkbox(&mut self.time_limited_trails, "").changed() {
                             settings_changed = true;
-                            // Sync checkbox state to tracker
-                            self.tracker.lock().unwrap().set_time_limited_trails(self.time_limited_trails);
+                            // Sync checkbox state to all trackers
+                            self.connection_manager.lock().unwrap().set_time_limited_trails(self.time_limited_trails);
                         }
                     });
 
@@ -3717,66 +3940,160 @@ impl eframe::App for AdsbApp {
 
                 ui.add_space(8.0);
 
-                // Server address input
-                ui.horizontal(|ui| {
-                    ui.label("Server:");
-                    ui.add(egui::TextEdit::singleline(&mut self.settings_server_edit)
-                        .hint_text("host:port")
-                        .desired_width(150.0));
-                });
+                // Server list
+                let mut servers_to_remove = Vec::new();
+                let mut config_changed = false;
 
-                ui.add_space(4.0);
+                // Get server statuses for display
+                let server_statuses: std::collections::HashMap<String, status::ServerStatus> = {
+                    let status = self.system_status.lock().unwrap();
+                    status.servers.clone()
+                };
 
-                // Validate and show current status
-                let is_valid = validate_server_address(&self.settings_server_edit).is_ok();
-                if !is_valid && !self.settings_server_edit.is_empty() {
-                    ui.label(egui::RichText::new("⚠ Invalid format (use host:port)")
-                        .color(egui::Color32::from_rgb(255, 150, 100))
-                        .size(9.0));
+                for server in &mut self.config.servers {
+                    // Initialize edit state if not present
+                    if !self.server_edit_state.contains_key(&server.id) {
+                        self.server_edit_state.insert(
+                            server.id.clone(),
+                            (server.name.clone(), server.address.clone())
+                        );
+                    }
+
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            // Connection status indicator
+                            if let Some(server_status) = server_statuses.get(&server.id) {
+                                let (icon, color) = match server_status.status {
+                                    status::ConnectionStatus::Connected => ("●", egui::Color32::from_rgb(50, 255, 50)),
+                                    status::ConnectionStatus::Connecting => ("○", egui::Color32::from_rgb(255, 200, 50)),
+                                    status::ConnectionStatus::Disconnected => ("○", egui::Color32::from_rgb(150, 150, 150)),
+                                    status::ConnectionStatus::Error => ("✗", egui::Color32::from_rgb(255, 100, 100)),
+                                };
+                                ui.label(egui::RichText::new(icon).color(color).size(16.0));
+                            } else {
+                                ui.label(egui::RichText::new("○").color(egui::Color32::from_rgb(150, 150, 150)).size(16.0));
+                            }
+
+                            ui.vertical(|ui| {
+                                // Server name editor
+                                ui.horizontal(|ui| {
+                                    ui.label("Name:");
+                                    let (name, _) = self.server_edit_state.get_mut(&server.id).unwrap();
+                                    if ui.add(egui::TextEdit::singleline(name)
+                                        .desired_width(120.0)).changed() {
+                                        server.name = name.clone();
+                                        config_changed = true;
+
+                                        // Update SystemStatus immediately for live status pane update
+                                        self.system_status.lock().unwrap().update_server_info(
+                                            &server.id,
+                                            server.name.clone(),
+                                            server.address.clone()
+                                        );
+                                    }
+                                });
+
+                                // Server address editor
+                                ui.horizontal(|ui| {
+                                    ui.label("Address:");
+                                    let (_, address) = self.server_edit_state.get_mut(&server.id).unwrap();
+                                    if ui.add(egui::TextEdit::singleline(address)
+                                        .hint_text("host:port")
+                                        .desired_width(120.0)).changed() {
+                                        server.address = address.clone();
+                                        config_changed = true;
+
+                                        // Update SystemStatus immediately for live status pane update
+                                        self.system_status.lock().unwrap().update_server_info(
+                                            &server.id,
+                                            server.name.clone(),
+                                            server.address.clone()
+                                        );
+
+                                        // Hot-reload address via ConnectionManager
+                                        self.connection_manager.lock().unwrap()
+                                            .update_server(&server.id, server.clone());
+                                    }
+                                });
+
+                                // Show connection stats if available
+                                if let Some(server_status) = server_statuses.get(&server.id) {
+                                    ui.label(egui::RichText::new(
+                                        format!("Messages: {} | Aircraft: {}",
+                                            server_status.message_count,
+                                            server_status.aircraft_count))
+                                        .size(8.0)
+                                        .color(egui::Color32::from_rgb(120, 120, 120)));
+
+                                    if let Some(ref error) = server_status.last_error {
+                                        ui.label(egui::RichText::new(format!("Error: {}", error))
+                                            .size(8.0)
+                                            .color(egui::Color32::from_rgb(255, 100, 100)));
+                                    }
+                                }
+                            });
+
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                // Remove button
+                                if ui.button("🗑").on_hover_text("Remove server").clicked() {
+                                    servers_to_remove.push(server.id.clone());
+                                }
+
+                                // Enabled checkbox
+                                let mut enabled = server.enabled;
+                                if ui.checkbox(&mut enabled, "Enabled").changed() {
+                                    server.enabled = enabled;
+                                    config_changed = true;
+
+                                    // Enable/disable via ConnectionManager
+                                    if enabled {
+                                        self.connection_manager.lock().unwrap()
+                                            .enable_server(&server.id);
+                                    } else {
+                                        self.connection_manager.lock().unwrap()
+                                            .disable_server(&server.id);
+                                    }
+                                }
+                            });
+                        });
+                    });
+
+                    ui.add_space(4.0);
+                }
+
+                // Remove servers marked for deletion
+                for server_id in &servers_to_remove {
+                    self.config.remove_server(server_id);
+                    self.server_edit_state.remove(server_id);
+                    self.connection_manager.lock().unwrap().remove_server(server_id);
+                    config_changed = true;
                 }
 
                 ui.add_space(8.0);
 
-                // Save button
-                ui.horizontal(|ui| {
-                    if ui.button("💾 Save & Reconnect").clicked() && is_valid {
-                        // Update config and save to disk
-                        self.config.server_address = self.settings_server_edit.clone();
+                // Add new server button
+                if ui.button("➕ Add Server").clicked() {
+                    let new_server = config::ServerConfig::new(
+                        format!("Server {}", self.config.servers.len() + 1),
+                        "localhost:30003".to_string(),
+                        false  // Start disabled
+                    );
 
-                        match self.config.save() {
-                            Ok(_) => {
-                                println!("Settings saved successfully");
+                    self.server_edit_state.insert(
+                        new_server.id.clone(),
+                        (new_server.name.clone(), new_server.address.clone())
+                    );
 
-                                // Hot-reload: Send new server address to TCP client thread
-                                if let Some(ref tx) = self.server_address_tx {
-                                    if let Err(e) = tx.send(self.settings_server_edit.clone()) {
-                                        eprintln!("Failed to send server address update: {}", e);
-                                    } else {
-                                        println!("Reconnecting to new server: {}", self.settings_server_edit);
-                                        // Update local server address for UI comparison
-                                        self.server_address = self.settings_server_edit.clone();
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to save settings: {}", e);
-                            }
-                        }
+                    self.connection_manager.lock().unwrap().add_server(new_server.clone());
+                    self.config.add_server(new_server);
+                    config_changed = true;
+                }
+
+                // Auto-save configuration when changed
+                if config_changed {
+                    if let Err(e) = self.config.save() {
+                        eprintln!("Failed to save config: {}", e);
                     }
-
-                    if ui.button("↻ Reset to Defaults").clicked() {
-                        let default_config = config::AppConfig::default();
-                        self.settings_server_edit = default_config.server_address;
-                    }
-                });
-
-                ui.add_space(4.0);
-
-                // Show connection status when addresses differ
-                if self.settings_server_edit != self.server_address {
-                    ui.label(egui::RichText::new("⚡ Click 'Save & Reconnect' to apply changes")
-                        .color(egui::Color32::from_rgb(255, 200, 100))
-                        .size(9.0));
                 }
 
                 ui.add_space(8.0);
