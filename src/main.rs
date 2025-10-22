@@ -3221,9 +3221,21 @@ impl AirjediApp {
             }
         }
 
-        // Floating toolbar in top-left corner
-        egui::Area::new("map_toolbar".into())
+        // Instructions text at the top
+        egui::Area::new("map_instructions".into())
             .fixed_pos(egui::pos2(10.0, 35.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    egui::RichText::new("Drag to pan | Scroll/pinch to zoom")
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(200, 200, 200))
+                );
+            });
+
+        // Floating toolbar below the instructions
+        egui::Area::new("map_toolbar".into())
+            .fixed_pos(egui::pos2(10.0, 60.0))
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::new()
@@ -3265,18 +3277,6 @@ impl AirjediApp {
                             }
                         });
                     });
-            });
-
-        // Instructions text below the toolbar
-        egui::Area::new("map_instructions".into())
-            .fixed_pos(egui::pos2(10.0, 75.0))
-            .order(egui::Order::Foreground)
-            .show(ui.ctx(), |ui| {
-                ui.label(
-                    egui::RichText::new("Drag to pan | Scroll/pinch to zoom")
-                        .size(12.0)
-                        .color(egui::Color32::from_rgb(200, 200, 200))
-                );
             });
 
         // Handle smooth scroll-to-zoom with exponential smoothing and cursor-centered behavior
