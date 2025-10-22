@@ -3279,22 +3279,6 @@ impl AirjediApp {
                     });
             });
 
-        // Attribution text (required by Carto/OSM license)
-        egui::Area::new("map_attribution".into())
-            .fixed_pos(egui::pos2(
-                ui.max_rect().right() - 10.0,
-                ui.max_rect().bottom() - 10.0
-            ))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(0.0, 0.0))
-            .show(ui.ctx(), |ui| {
-                ui.label(
-                    egui::RichText::new("© OpenStreetMap contributors © CARTO")
-                        .size(10.0)
-                        .color(egui::Color32::from_black_alpha(180))
-                );
-            });
-
         // Tile error/loading display at top-center
         if let Some(ref error_msg) = self.tile_error {
             let is_error = error_msg.contains("Failed");
@@ -3875,6 +3859,24 @@ impl eframe::App for AirjediApp {
                 let _ = self.config.save();
             }
         }
+
+        // Attribution text (required by Carto/OSM license)
+        // Position just to the left of the aircraft list panel
+        let viewport = ctx.viewport_rect();
+        egui::Area::new("map_attribution".into())
+            .fixed_pos(egui::pos2(
+                viewport.right() - animated_width - 10.0,
+                viewport.bottom() - 10.0
+            ))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new("© OpenStreetMap contributors © CARTO")
+                        .size(10.0)
+                        .color(egui::Color32::from_black_alpha(180))
+                );
+            });
 
         // Overlay controls window (only shown when opened from View menu)
         egui::Window::new("Map Overlays")
