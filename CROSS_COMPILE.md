@@ -1,48 +1,98 @@
-# Cross-Compiling AirJedi Desktop for Raspberry Pi 5
+# Building AirJedi Desktop for Raspberry Pi 5
 
-This guide explains how to cross-compile AirJedi Desktop from macOS (or Linux) to run on Raspberry Pi 5.
+This guide explains how to build AirJedi Desktop for Raspberry Pi 5, either natively on the Pi or cross-compiled from macOS/Linux.
 
 ## Target Platform
 
 - **Device**: Raspberry Pi 5
 - **Architecture**: aarch64 (64-bit ARM Cortex-A76)
 - **OS**: Raspberry Pi OS (64-bit) or Ubuntu 64-bit
-- **Target Triple**: `aarch64-unknown-linux-gnu` or `aarch64-unknown-linux-musl`
+- **Target Triple**: `aarch64-unknown-linux-gnu`
 
-## Quick Start for Apple Silicon Macs (Recommended)
+## Native Compilation on Raspberry Pi 5 (Recommended)
 
-**If you're on Apple Silicon (M1/M2/M3/M4 Mac)**, use this method for native ARM64→ARM64 compilation:
+**The simplest and most reliable method is to build directly on the Raspberry Pi 5.**
 
-### 1. Install musl-cross toolchain
+### 1. Install Rust on Raspberry Pi
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+```
+
+### 2. Install Build Dependencies
+
+```bash
+sudo apt update
+sudo apt install -y \
+    build-essential \
+    libgl1-mesa-dev \
+    libgl1-mesa-dri \
+    libx11-dev \
+    libxcursor-dev \
+    libxrandr-dev \
+    libxi-dev \
+    libxinerama-dev \
+    pkg-config
+```
+
+### 3. Clone and Build
+
+```bash
+git clone https://github.com/yourusername/airjedi-desktop.git
+cd airjedi-desktop
+cargo build --release
+```
+
+The binary will be created at:
+```
+target/release/airjedi-desktop
+```
+
+**Build Time**: Approximately 10-15 minutes on Raspberry Pi 5 (first build includes dependency compilation).
+
+**Why Native Compilation?**
+- ✅ **Simple setup**: No cross-compilation toolchains needed
+- ✅ **100% compatibility**: Binary is guaranteed to work on the Pi
+- ✅ **Optimized**: Built with `-C target-cpu=cortex-a76` for Raspberry Pi 5 (via `.cargo/config.toml`)
+- ✅ **No deployment hassle**: Binary is already on the target device
+
+---
+
+## Cross-Compilation from Apple Silicon Macs
+
+**If you're on Apple Silicon (M1/M2/M3/M4 Mac)**, you can cross-compile using native ARM64→ARM64 compilation:
+
+### 1. Add Rust target
+
+```bash
+rustup target add aarch64-unknown-linux-gnu
+```
+
+### 2. Install aarch64 linker
 
 ```bash
 brew install filosottile/musl-cross/musl-cross
 ```
 
-### 2. Add Rust target
-
-```bash
-rustup target add aarch64-unknown-linux-musl
-```
-
 ### 3. Build for Raspberry Pi 5
 
 ```bash
-cargo build --target aarch64-unknown-linux-musl --release
+cargo build --target aarch64-unknown-linux-gnu --release
 ```
 
 The binary will be created at:
 ```
-target/aarch64-unknown-linux-musl/release/airjedi-desktop
+target/aarch64-unknown-linux-gnu/release/airjedi-desktop
 ```
 
-**Why musl for Apple Silicon?**
-- ✅ **Native compilation**: No emulation, no QEMU crashes
-- ✅ **Fast builds**: 2-3 minutes (vs 20+ minutes with containers)
-- ✅ **Static linking**: Binary runs on any ARM64 Linux without dependencies
+**Why Apple Silicon Cross-Compilation Works Well:**
+- ✅ **Native ARM64**: No emulation needed (ARM Mac → ARM Pi)
+- ✅ **Fast builds**: 2-3 minutes vs 10-15 minutes on Pi
+- ✅ **Same architecture**: Both use aarch64, simplifying the process
 - ✅ **Optimized**: Built with `-C target-cpu=cortex-a76` for Raspberry Pi 5
 
-**Note**: The `cross` tool (Method 1 below) doesn't work reliably on Apple Silicon because cross-rs only publishes x86_64 container images, requiring unstable QEMU emulation.
+**Note**: The `cross` tool doesn't work reliably on Apple Silicon because it requires QEMU emulation of x86_64 Docker containers.
 
 ---
 
@@ -70,11 +120,9 @@ sudo apt install -y \
     libxinerama-dev
 ```
 
-## Method 1: Using `cross` (Recommended for x86_64/Intel Macs)
+## Cross-Compilation from Intel/x86_64 Macs (Using `cross`)
 
-**⚠️ Note**: This method **does not work on Apple Silicon Macs**. Use the Quick Start method above instead.
-
-This method uses Docker containers with pre-configured cross-compilation environments.
+**For Intel Macs only.** This method uses Docker containers with pre-configured cross-compilation environments.
 
 ### 1. Install `cross`
 
@@ -101,57 +149,21 @@ The project includes `Cross.toml` which configures the Docker image and build se
 - Includes OpenGL/Mesa development libraries
 - Optimizes for Raspberry Pi 5's Cortex-A76 CPU (via `.cargo/config.toml`)
 
-## Method 2: Manual Cross-Compilation
+**Note**: The `cross` tool works well on Intel/x86_64 Macs but has issues on Apple Silicon due to Docker x86_64 emulation requirements.
 
-If you prefer not to use Docker or need more control over the build process.
+## Deploying to Raspberry Pi 5 (Cross-Compilation Only)
 
-### 1. Add Rust Target
-
-```bash
-rustup target add aarch64-unknown-linux-gnu
-```
-
-### 2. Install aarch64 Linker (macOS)
-
-Using Homebrew's musl-cross:
-
-```bash
-brew install filosottile/musl-cross/musl-cross
-```
-
-Or using a pre-built aarch64 toolchain:
-
-```bash
-brew install aarch64-elf-gcc
-```
-
-### 3. Configure Linker
-
-Edit `.cargo/config.toml` and uncomment the linker line:
-
-```toml
-[target.aarch64-unknown-linux-gnu]
-linker = "aarch64-linux-gnu-gcc"  # Uncomment this line
-rustflags = ["-C", "target-cpu=cortex-a76"]
-```
-
-### 4. Build
-
-```bash
-cargo build --target aarch64-unknown-linux-gnu --release
-```
-
-## Deploying to Raspberry Pi 5
+**Skip this section if you built natively on the Raspberry Pi.**
 
 ### 1. Copy Binary to Pi
 
 ```bash
 # Replace <pi-ip> with your Raspberry Pi's IP address or hostname
 
-# If you built with musl (Apple Silicon method):
-scp target/aarch64-unknown-linux-musl/release/airjedi-desktop pi@<pi-ip>:~/
+# If you cross-compiled from Apple Silicon Mac:
+scp target/aarch64-unknown-linux-gnu/release/airjedi-desktop pi@<pi-ip>:~/
 
-# If you built with cross (Intel Mac / x86_64 method):
+# If you used the cross tool (Intel Mac / x86_64):
 # scp target/aarch64-unknown-linux-gnu/release/airjedi-desktop pi@<pi-ip>:~/
 ```
 
