@@ -2924,10 +2924,10 @@ impl eframe::App for AirjediApp {
         // Position just to the left of the aircraft list panel
         let viewport = ctx.viewport_rect();
 
-        // Calculate spacing (text width + padding, reduced by 15% to move closer to panel)
+        // Calculate spacing (text width + padding, reduced by 23.5% to move closer to panel)
         let estimated_text_width = 260.0;
         let padding = 20.0;
-        let total_spacing = (estimated_text_width + padding) * 0.85;  // 15% closer to the right
+        let total_spacing = (estimated_text_width + padding) * 0.765;  // 23.5% closer to the right
 
         egui::Area::new("map_attribution".into())
             .fixed_pos(egui::pos2(
