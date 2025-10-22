@@ -2560,35 +2560,42 @@ impl AdsbApp {
         let receiver_lat = self.receiver_lat;
         let receiver_lon = self.receiver_lon;
 
-        // Capture scroll events for smooth scroll-to-zoom (when not over the panel)
-        let scroll_delta = if !pointer_over_panel {
-            ui.ctx().input(|i| i.smooth_scroll_delta)
-        } else {
-            egui::Vec2::ZERO
-        };
+        // Handle scroll events: either for map zoom or for panel scrolling
+        let scroll_delta;
+        let (saved_smooth_scroll, saved_raw_scroll);
 
-        // Store zoom level and center before map widget processes gestures
-        // This allows us to detect and slow down pinch-to-zoom, and block panning
-        let zoom_before_map = self.map_memory.zoom();
-        let center_before_map = self.map_memory.detached().unwrap_or_else(|| lat_lon(self.receiver_lat, self.receiver_lon));
-
-        // If pointer is over panel, temporarily hide scroll from the map
-        // Save original values to restore them later for the panel
-        let (saved_smooth_scroll, saved_raw_scroll) = if pointer_over_panel {
+        if pointer_over_panel {
+            // Pointer over panel - save scroll for panel, block from map
             let saved = ui.ctx().input(|i| {
                 (i.smooth_scroll_delta, i.raw_scroll_delta)
             });
 
-            // Clear scroll so map doesn't see it
             ui.ctx().input_mut(|i| {
                 i.smooth_scroll_delta = egui::Vec2::ZERO;
                 i.raw_scroll_delta = egui::Vec2::ZERO;
             });
 
-            (Some(saved.0), Some(saved.1))
+            scroll_delta = egui::Vec2::ZERO;
+            saved_smooth_scroll = Some(saved.0);
+            saved_raw_scroll = Some(saved.1);
         } else {
-            (None, None)
-        };
+            // Pointer over map - capture scroll for our custom zoom, block from Map widget
+            scroll_delta = ui.ctx().input(|i| i.smooth_scroll_delta);
+
+            // Consume scroll events to prevent Map widget from also processing them
+            // This ensures only our cursor-centered zoom logic runs
+            ui.ctx().input_mut(|i| {
+                i.smooth_scroll_delta = egui::Vec2::ZERO;
+                i.raw_scroll_delta = egui::Vec2::ZERO;
+            });
+
+            saved_smooth_scroll = None;
+            saved_raw_scroll = None;
+        }
+
+        // Store zoom level before map widget processes gestures
+        // This allows us to detect and slow down pinch-to-zoom
+        let zoom_before_map = self.map_memory.zoom();
 
         // Create Walkers Map widget
         let receiver_position = lat_lon(receiver_lat, receiver_lon);
@@ -3038,7 +3045,7 @@ impl AdsbApp {
             }
         }
 
-        // Handle smooth scroll-to-zoom with exponential smoothing to eliminate jitter
+        // Handle smooth scroll-to-zoom with exponential smoothing and cursor-centered behavior
         if scroll_delta.y.abs() > 0.1 {
             // Apply exponential smoothing to scroll delta for smooth zoom
             // smoothing_factor: 0 = no smoothing (jittery), 1 = max smoothing (sluggish)
@@ -3055,12 +3062,99 @@ impl AdsbApp {
             self.scroll_zoom_velocity *= 0.8;
         }
 
-        // Apply smoothed scroll zoom
+        // Apply smoothed scroll zoom with cursor-centered behavior using proper Web Mercator projection
         if self.scroll_zoom_velocity.abs() > 0.001 {
-            let current_zoom = self.map_memory.zoom();
-            let new_zoom = (current_zoom + self.scroll_zoom_velocity as f64).clamp(6.0, 18.0);
-            if let Err(e) = self.map_memory.set_zoom(new_zoom) {
-                eprintln!("Failed to set zoom: {:?}", e);
+            // Get cursor position for zoom centering
+            let cursor_pos = ui.input(|i| i.pointer.hover_pos());
+
+            // Get current zoom and map center
+            let old_zoom = self.map_memory.zoom();
+            let map_position = self.map_memory.detached().unwrap_or_else(|| lat_lon(self.receiver_lat, self.receiver_lon));
+            let map_center_lat = map_position.y();
+            let map_center_lon = map_position.x();
+
+            // Calculate new zoom level
+            let new_zoom = (old_zoom + self.scroll_zoom_velocity as f64).clamp(6.0, 18.0);
+
+            // If cursor is over the map, zoom centered on cursor using Web Mercator projection
+            if let Some(cursor) = cursor_pos {
+                // Get map widget bounds
+                let map_rect = ui.max_rect();
+
+                if map_rect.contains(cursor) {
+                    // Use integer zoom levels for Web Mercator tile coordinate calculations
+                    let old_zoom_int = old_zoom.round() as u8;
+                    let new_zoom_int = new_zoom.round() as u8;
+                    let tile_pixel_size = 256.0;
+
+                    // Calculate cursor offset from map center in screen pixels
+                    let map_center_screen = map_rect.center();
+                    let cursor_offset_x = (cursor.x - map_center_screen.x) as f64;
+                    let cursor_offset_y = (cursor.y - map_center_screen.y) as f64;
+
+                    // Convert map center to tile coordinates at old zoom level
+                    let old_center_tile_x = WebMercator::lon_to_x(map_center_lon, old_zoom_int);
+                    let old_center_tile_y = WebMercator::lat_to_y(map_center_lat, old_zoom_int);
+
+                    // Calculate fractional zoom for scale factor
+                    let old_zoom_fraction = old_zoom - old_zoom_int as f64;
+                    let old_scale_factor = 2.0_f64.powf(old_zoom_fraction);
+
+                    // Convert cursor screen offset to tile offset at old zoom
+                    let cursor_tile_offset_x = cursor_offset_x / (tile_pixel_size * old_scale_factor);
+                    let cursor_tile_offset_y = cursor_offset_y / (tile_pixel_size * old_scale_factor);
+
+                    // Get tile coordinates at cursor position (at old zoom level)
+                    let cursor_tile_x = old_center_tile_x + cursor_tile_offset_x;
+                    let cursor_tile_y = old_center_tile_y + cursor_tile_offset_y;
+
+                    // Convert cursor tile coordinates back to lat/lon
+                    let cursor_lat = WebMercator::tile_to_lat(cursor_tile_y, old_zoom_int);
+                    let cursor_lon = WebMercator::tile_to_lon(cursor_tile_x, old_zoom_int);
+
+                    // Apply zoom
+                    if let Err(e) = self.map_memory.set_zoom(new_zoom) {
+                        eprintln!("Failed to set zoom: {:?}", e);
+                    }
+
+                    // Convert cursor lat/lon to tile coordinates at NEW zoom level
+                    let new_cursor_tile_x = WebMercator::lon_to_x(cursor_lon, new_zoom_int);
+                    let new_cursor_tile_y = WebMercator::lat_to_y(cursor_lat, new_zoom_int);
+
+                    // Calculate fractional zoom for new scale factor
+                    let new_zoom_fraction = new_zoom - new_zoom_int as f64;
+                    let new_scale_factor = 2.0_f64.powf(new_zoom_fraction);
+
+                    // Calculate tile offset for cursor at new zoom (same screen pixels)
+                    let new_cursor_tile_offset_x = cursor_offset_x / (tile_pixel_size * new_scale_factor);
+                    let new_cursor_tile_offset_y = cursor_offset_y / (tile_pixel_size * new_scale_factor);
+
+                    // Calculate new map center in tile coordinates
+                    // We want cursor to stay at the same screen position, so:
+                    // new_center + new_offset = cursor_tile
+                    let new_center_tile_x = new_cursor_tile_x - new_cursor_tile_offset_x;
+                    let new_center_tile_y = new_cursor_tile_y - new_cursor_tile_offset_y;
+
+                    // Convert new center back to lat/lon
+                    let new_center_lat = WebMercator::tile_to_lat(new_center_tile_y, new_zoom_int);
+                    let new_center_lon = WebMercator::tile_to_lon(new_center_tile_x, new_zoom_int);
+
+                    // Clamp latitude to valid range
+                    let clamped_lat = new_center_lat.clamp(-85.0, 85.0);
+
+                    // Update map center
+                    self.map_memory.center_at(lat_lon(clamped_lat, new_center_lon));
+                } else {
+                    // Cursor not over map, just zoom normally
+                    if let Err(e) = self.map_memory.set_zoom(new_zoom) {
+                        eprintln!("Failed to set zoom: {:?}", e);
+                    }
+                }
+            } else {
+                // No cursor position, just zoom normally
+                if let Err(e) = self.map_memory.set_zoom(new_zoom) {
+                    eprintln!("Failed to set zoom: {:?}", e);
+                }
             }
         }
 
@@ -3083,16 +3177,7 @@ impl AdsbApp {
             }
         }
 
-        // Disable two-finger panning by restoring the map center after the widget processes gestures
-        // This blocks any panning that occurred during this frame
-        let center_after_map = self.map_memory.detached().unwrap_or_else(|| lat_lon(self.receiver_lat, self.receiver_lon));
-
-        // If the center changed (panning occurred), restore it to the previous center
-        if (center_after_map.x() - center_before_map.x()).abs() > 0.0001 ||
-           (center_after_map.y() - center_before_map.y()).abs() > 0.0001 {
-            // Reset center to prevent panning
-            self.map_memory.center_at(center_before_map);
-        }
+        // Panning is now allowed - removed the blocking code that was preventing all map movement
 
         // Restore scroll input for the panel (if we saved it)
         if let (Some(smooth), Some(raw)) = (saved_smooth_scroll, saved_raw_scroll) {
