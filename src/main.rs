@@ -2923,13 +2923,16 @@ impl eframe::App for AirjediApp {
         // Attribution text (required by Carto/OSM license)
         // Position just to the left of the aircraft list panel
         let viewport = ctx.viewport_rect();
+
+        // Estimate text width (approximately 250-270 pixels for this text at size 10)
+        let estimated_text_width = 260.0;
+
         egui::Area::new("map_attribution".into())
             .fixed_pos(egui::pos2(
-                viewport.right() - animated_width - 10.0,
-                viewport.bottom() - 10.0
+                viewport.right() - animated_width - estimated_text_width - 20.0,  // 20px padding from panel
+                viewport.bottom() - 20.0  // 20px from bottom
             ))
             .order(egui::Order::Tooltip)  // Higher z-order to stay above panel
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new("© OpenStreetMap contributors © CARTO")
