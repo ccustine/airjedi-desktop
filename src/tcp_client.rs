@@ -18,44 +18,63 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, Duration};
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use crate::basestation::AircraftTracker;
 use crate::status::{SharedSystemStatus, ConnectionStatus};
 
 pub async fn connect_adsb_feed(
+    server_id: String,
+    server_name: String,
     mut address_rx: watch::Receiver<String>,
     tracker: Arc<Mutex<AircraftTracker>>,
-    status: SharedSystemStatus
+    status: SharedSystemStatus,
+    cancel_token: CancellationToken,
 ) {
     loop {
+        // Check for cancellation
+        if cancel_token.is_cancelled() {
+            info!("[{}] Connection cancelled", server_name);
+            return;
+        }
+
         // Get current server address from the watch channel
         let current_address = address_rx.borrow_and_update().clone();
 
-        // Set current connection address in status
-        status.lock().unwrap().connection_address = current_address.clone();
-
         // Set status to connecting
-        status.lock().unwrap().set_connection_status(ConnectionStatus::Connecting);
+        status.lock().unwrap().update_server_status(&server_id, ConnectionStatus::Connecting);
 
         // Clone for use in the async block
         let address = current_address.clone();
 
-        match connect_and_process(&address, tracker.clone(), status.clone(), address_rx.clone()).await {
+        match connect_and_process(
+            &server_id,
+            &server_name,
+            &address,
+            tracker.clone(),
+            status.clone(),
+            address_rx.clone(),
+            cancel_token.clone(),
+        ).await {
             Ok(reconnect_reason) => {
                 match reconnect_reason {
                     ReconnectReason::ServerAddressChanged => {
-                        info!("Server address changed, reconnecting immediately...");
+                        info!("[{}] Server address changed, reconnecting immediately...", server_name);
                         continue; // Skip the 5-second delay
                     }
                     ReconnectReason::ConnectionClosed => {
-                        info!("ADSB connection closed normally");
-                        status.lock().unwrap().set_connection_status(ConnectionStatus::Disconnected);
+                        info!("[{}] Connection closed normally", server_name);
+                        status.lock().unwrap().update_server_status(&server_id, ConnectionStatus::Disconnected);
+                    }
+                    ReconnectReason::Cancelled => {
+                        info!("[{}] Connection cancelled", server_name);
+                        return; // Exit completely
                     }
                 }
             }
             Err(e) => {
-                error!("ADSB connection error: {}", e);
-                status.lock().unwrap().set_connection_error(e.to_string());
+                error!("[{}] Connection error: {}", server_name, e);
+                status.lock().unwrap().update_server_error(&server_id, e.to_string());
             }
         }
 
@@ -67,30 +86,40 @@ pub async fn connect_adsb_feed(
 enum ReconnectReason {
     ServerAddressChanged,
     ConnectionClosed,
+    Cancelled,
 }
 
 const CLEANUP_INTERVAL_MESSAGES: u32 = 100;
 const AIRCRAFT_TIMEOUT_SECONDS: i64 = 180; // 3 minutes
 
 async fn connect_and_process(
+    server_id: &str,
+    server_name: &str,
     address: &str,
     tracker: Arc<Mutex<AircraftTracker>>,
     status: SharedSystemStatus,
     mut address_rx: watch::Receiver<String>,
+    cancel_token: CancellationToken,
 ) -> Result<ReconnectReason, Box<dyn std::error::Error>> {
-    info!("Connecting to {}...", address);
+    info!("[{}] Connecting to {}...", server_name, address);
 
     let stream = TcpStream::connect(address).await?;
-    info!("Connected to BaseStation feed");
+    info!("[{}] Connected to BaseStation feed", server_name);
 
     // Mark connection as successful
-    status.lock().unwrap().set_connection_status(ConnectionStatus::Connected);
+    status.lock().unwrap().update_server_status(server_id, ConnectionStatus::Connected);
 
     let reader = BufReader::new(stream);
     let mut lines = reader.lines();
     let mut cleanup_counter: u32 = 0;
 
     while let Some(line) = lines.next_line().await? {
+        // Check for cancellation
+        if cancel_token.is_cancelled() {
+            info!("[{}] Connection cancelled during message processing", server_name);
+            return Ok(ReconnectReason::Cancelled);
+        }
+
         // Parse the BaseStation message - scope lock to drop before next await
         {
             let mut tracker_lock = tracker.lock()
@@ -98,8 +127,8 @@ async fn connect_and_process(
             tracker_lock.parse_basestation_message(&line);
         }
 
-        // Increment message counter
-        status.lock().unwrap().increment_message_count();
+        // Increment message counter for this server
+        status.lock().unwrap().increment_server_message_count(server_id);
 
         // Cleanup old aircraft every N messages
         cleanup_counter = cleanup_counter.saturating_add(1);

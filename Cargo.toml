@@ -8,6 +8,9 @@ authors = ["Chris Custine <124975+ccustine@users.noreply.github.com>"]
 [dependencies]
 eframe = "0.33"
 egui = "0.33"
+egui_extras = { version = "0.33", features = ["svg", "image"] }
+usvg = "0.45"
+resvg = "0.45"
 walkers = "0.47.0"
 tokio = { version = "1", features = ["full"] }
 chrono = "0.4"
@@ -25,6 +28,8 @@ log = "0.4"
 env_logger = "0.11"
 confy = "0.6"
 webbrowser = "1.0.6"
+uuid = { version = "1.11", features = ["v4", "serde"] }
+tokio-util = "0.7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -32,4 +37,15 @@ objc2-core-location = "0.3"
 objc2-foundation = "0.3"
 
 [profile.release]
-#debug = true  # Enable debug symbols for profiling while keeping optimizations
+lto = true
+codegen-units = 1
+panic = 'abort'
+strip = true
+#opt-level = 'z' # only have smaller size after strip
+rpath = true
+
+[package.metadata.bundle]
+name = "AirJedi Desktop"
+identifier = "com.airjedi.airjedidesktop"
+icon = ["assets/airjedi.svg"]
+osx_minimum_system_version = "10.14"

@@ -71,6 +71,9 @@ pub struct AircraftData {
     pub last_seen: DateTime<Utc>,
     pub position_history: Vec<PositionPoint>,
     pub consecutive_rejections: u32,
+    // Server source tracking
+    pub source_server_id: String,
+    pub source_server_name: String,
     // Metadata fields
     pub registration: Option<String>,
     pub aircraft_type: Option<String>,
@@ -87,7 +90,7 @@ pub struct Aircraft {
 }
 
 impl Aircraft {
-    pub fn new(icao: String) -> Self {
+    pub fn new(icao: String, source_server_id: String, source_server_name: String) -> Self {
         Self {
             inner: Arc::new(RwLock::new(AircraftData {
                 icao,
@@ -101,6 +104,8 @@ impl Aircraft {
                 last_seen: Utc::now(),
                 position_history: Vec::new(),
                 consecutive_rejections: 0,
+                source_server_id,
+                source_server_name,
                 registration: None,
                 aircraft_type: None,
                 photo_url: None,
@@ -200,6 +205,18 @@ impl Aircraft {
         self.inner.read()
             .expect("Aircraft data lock poisoned - unrecoverable state")
             .metadata_fetched
+    }
+
+    pub fn source_server_id(&self) -> String {
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .source_server_id.clone()
+    }
+
+    pub fn source_server_name(&self) -> String {
+        self.inner.read()
+            .expect("Aircraft data lock poisoned - unrecoverable state")
+            .source_server_name.clone()
     }
 
     /// Execute a closure with read-only access to position history
@@ -334,6 +351,9 @@ pub struct AircraftTracker {
     max_distance_miles: f64,
     status: Option<Arc<Mutex<SystemStatus>>>,
     time_limited_trails: bool,
+    // Server source information
+    server_id: String,
+    server_name: String,
 }
 
 impl Default for AircraftTracker {
@@ -351,6 +371,8 @@ impl AircraftTracker {
             max_distance_miles: 400.0,
             status: None,
             time_limited_trails: false,  // Default to full history trails
+            server_id: String::new(),
+            server_name: String::new(),
         }
     }
 
@@ -361,6 +383,12 @@ impl AircraftTracker {
     pub fn set_center(&mut self, lat: f64, lon: f64) {
         self.center_lat = lat;
         self.center_lon = lon;
+    }
+
+    /// Set server information for this tracker
+    pub fn set_server_info(&mut self, server_id: String, server_name: String) {
+        self.server_id = server_id;
+        self.server_name = server_name;
     }
 
     pub fn set_time_limited_trails(&mut self, enabled: bool) {
@@ -416,7 +444,9 @@ impl AircraftTracker {
             return;
         }
 
-        let aircraft = self.aircraft.entry(icao.clone()).or_insert_with(|| Aircraft::new(icao));
+        let aircraft = self.aircraft.entry(icao.clone()).or_insert_with(|| {
+            Aircraft::new(icao, self.server_id.clone(), self.server_name.clone())
+        });
 
         // Update last seen timestamp
         aircraft.with_data_mut(|data| {

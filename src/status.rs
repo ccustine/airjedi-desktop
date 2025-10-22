@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use chrono::{DateTime, Utc};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 /// Connection status for ADS-B feed
@@ -40,8 +40,71 @@ pub enum DiagnosticLevel {
     Error,
 }
 
+/// Per-server connection status and statistics
+#[derive(Debug, Clone)]
+pub struct ServerStatus {
+    /// Unique server ID
+    pub server_id: String,
+
+    /// Server display name
+    pub server_name: String,
+
+    /// Server address (host:port)
+    pub server_address: String,
+
+    /// Current connection status
+    pub status: ConnectionStatus,
+
+    /// Last error message (if any)
+    pub last_error: Option<String>,
+
+    /// Total messages received from this server
+    pub message_count: u64,
+
+    /// Number of aircraft currently tracked from this server
+    pub aircraft_count: usize,
+
+    /// When the connection was established
+    pub connected_at: Option<DateTime<Utc>>,
+
+    /// Last time a message was received
+    pub last_message_at: Option<DateTime<Utc>>,
+}
+
+impl ServerStatus {
+    /// Create a new server status tracker
+    pub fn new(server_id: String, server_name: String, server_address: String) -> Self {
+        Self {
+            server_id,
+            server_name,
+            server_address,
+            status: ConnectionStatus::Disconnected,
+            last_error: None,
+            message_count: 0,
+            aircraft_count: 0,
+            connected_at: None,
+            last_message_at: None,
+        }
+    }
+
+    /// Get connection uptime in seconds
+    pub fn uptime_seconds(&self) -> u64 {
+        if self.status == ConnectionStatus::Connected {
+            if let Some(connected) = self.connected_at {
+                (Utc::now() - connected).num_seconds() as u64
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    }
+}
+
 /// System status tracking all metrics and diagnostics
 pub struct SystemStatus {
+    // Per-server status tracking
+    pub servers: HashMap<String, ServerStatus>,
     // Connection status
     pub connection_status: ConnectionStatus,
     pub connection_address: String,
@@ -88,6 +151,7 @@ impl Default for SystemStatus {
 impl SystemStatus {
     pub fn new() -> Self {
         Self {
+            servers: HashMap::new(),
             connection_status: ConnectionStatus::Disconnected,
             connection_address: String::new(),
             last_connection_attempt: None,
@@ -263,6 +327,123 @@ impl SystemStatus {
         } else {
             self.average_update_duration_ms =
                 ALPHA * duration_ms + (1.0 - ALPHA) * self.average_update_duration_ms;
+        }
+    }
+
+    // ===== Per-Server Status Management =====
+
+    /// Register a new server for tracking
+    pub fn register_server(&mut self, server_id: String, server_name: String, server_address: String) {
+        let status = ServerStatus::new(server_id.clone(), server_name, server_address);
+        self.servers.insert(server_id, status);
+    }
+
+    /// Remove a server from tracking
+    pub fn unregister_server(&mut self, server_id: &str) {
+        self.servers.remove(server_id);
+    }
+
+    /// Update server connection status
+    pub fn update_server_status(&mut self, server_id: &str, status: ConnectionStatus) {
+        // Extract server info first to avoid borrow conflicts
+        let diagnostic_message = if let Some(server_status) = self.servers.get_mut(server_id) {
+            server_status.status = status;
+
+            let msg = match status {
+                ConnectionStatus::Connected => {
+                    server_status.connected_at = Some(Utc::now());
+                    server_status.last_error = None;
+                    Some((DiagnosticLevel::Info,
+                        format!("[{}] Connected to {}", server_status.server_name, server_status.server_address)))
+                }
+                ConnectionStatus::Connecting => {
+                    Some((DiagnosticLevel::Info,
+                        format!("[{}] Connecting to {}...", server_status.server_name, server_status.server_address)))
+                }
+                ConnectionStatus::Disconnected => {
+                    server_status.connected_at = None;
+                    Some((DiagnosticLevel::Warning,
+                        format!("[{}] Disconnected from {}", server_status.server_name, server_status.server_address)))
+                }
+                ConnectionStatus::Error => {
+                    server_status.connected_at = None;
+                    None
+                }
+            };
+            msg
+        } else {
+            None
+        };
+
+        // Add diagnostic after releasing the borrow
+        if let Some((level, message)) = diagnostic_message {
+            self.add_diagnostic(level, message);
+        }
+    }
+
+    /// Record a connection error for a server
+    pub fn update_server_error(&mut self, server_id: &str, error: String) {
+        // Extract server info first to avoid borrow conflicts
+        let diagnostic_message = if let Some(server_status) = self.servers.get_mut(server_id) {
+            server_status.status = ConnectionStatus::Error;
+            server_status.last_error = Some(error.clone());
+            server_status.connected_at = None;
+            Some(format!("[{}] Connection error: {}", server_status.server_name, error))
+        } else {
+            None
+        };
+
+        // Add diagnostic after releasing the borrow
+        if let Some(message) = diagnostic_message {
+            self.add_diagnostic(DiagnosticLevel::Error, message);
+        }
+    }
+
+    /// Increment message count for a server
+    pub fn increment_server_message_count(&mut self, server_id: &str) {
+        if let Some(server_status) = self.servers.get_mut(server_id) {
+            server_status.message_count += 1;
+            server_status.last_message_at = Some(Utc::now());
+        }
+    }
+
+    /// Update aircraft count for a server
+    pub fn update_server_aircraft_count(&mut self, server_id: &str, count: usize) {
+        if let Some(server_status) = self.servers.get_mut(server_id) {
+            server_status.aircraft_count = count;
+        }
+    }
+
+    /// Get status for a specific server
+    pub fn get_server_status(&self, server_id: &str) -> Option<&ServerStatus> {
+        self.servers.get(server_id)
+    }
+
+    /// Get all server statuses
+    pub fn get_all_server_statuses(&self) -> Vec<&ServerStatus> {
+        self.servers.values().collect()
+    }
+
+    /// Get total message count across all servers
+    pub fn get_total_server_messages(&self) -> u64 {
+        self.servers.values().map(|s| s.message_count).sum()
+    }
+
+    /// Get total aircraft count across all servers
+    pub fn get_total_server_aircraft(&self) -> usize {
+        self.servers.values().map(|s| s.aircraft_count).sum()
+    }
+
+    /// Get number of connected servers
+    pub fn get_connected_server_count(&self) -> usize {
+        self.servers.values().filter(|s| s.status == ConnectionStatus::Connected).count()
+    }
+
+    /// Update server name and address in status display
+    pub fn update_server_info(&mut self, server_id: &str, name: String, address: String) {
+        if let Some(server_status) = self.servers.get_mut(server_id) {
+            server_status.server_name = name;
+            server_status.server_address = address;
         }
     }
 }

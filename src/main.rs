@@ -3279,6 +3279,53 @@ impl AirjediApp {
                     });
             });
 
+        // Attribution text (required by Carto/OSM license)
+        egui::Area::new("map_attribution".into())
+            .fixed_pos(egui::pos2(
+                ui.max_rect().right() - 10.0,
+                ui.max_rect().bottom() - 10.0
+            ))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(0.0, 0.0))
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    egui::RichText::new("© OpenStreetMap contributors © CARTO")
+                        .size(10.0)
+                        .color(egui::Color32::from_black_alpha(180))
+                );
+            });
+
+        // Tile error/loading display at top-center
+        if let Some(ref error_msg) = self.tile_error {
+            let is_error = error_msg.contains("Failed");
+            let bg_color = if is_error {
+                egui::Color32::from_rgb(220, 50, 50)
+            } else {
+                egui::Color32::from_rgb(255, 200, 100)
+            };
+
+            egui::Area::new("tile_error".into())
+                .fixed_pos(egui::pos2(
+                    ui.max_rect().center().x,
+                    ui.max_rect().top() + 20.0
+                ))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 0.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::new()
+                        .fill(bg_color)
+                        .corner_radius(5.0)
+                        .inner_margin(egui::Margin::symmetric(12, 6))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(error_msg)
+                                    .size(12.0)
+                                    .color(egui::Color32::WHITE)
+                            );
+                        });
+                });
+        }
+
         // Handle smooth scroll-to-zoom with exponential smoothing and cursor-centered behavior
         if scroll_delta.y.abs() > 0.1 {
             // Apply exponential smoothing to scroll delta for smooth zoom

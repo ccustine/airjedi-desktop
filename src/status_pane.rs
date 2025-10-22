@@ -137,56 +137,112 @@ impl StatusPane {
     }
 
     fn render_connection_section(&self, ui: &mut egui::Ui, status: &SystemStatus) {
-        ui.label(egui::RichText::new("CONN")
+        ui.label(egui::RichText::new("SERVERS")
             .color(egui::Color32::from_rgb(150, 150, 150))
             .size(9.0)
             .strong());
 
         ui.add_space(2.0);
 
-        // Connection status with colored indicator
-        ui.horizontal(|ui| {
-            let (status_color, status_text, status_icon) = match status.connection_status {
-                ConnectionStatus::Connected => (
-                    egui::Color32::from_rgb(100, 255, 100),
-                    "CONNECTED",
-                    "●"
-                ),
-                ConnectionStatus::Connecting => (
-                    egui::Color32::from_rgb(255, 200, 100),
-                    "CONNECTING",
-                    "◐"
-                ),
-                ConnectionStatus::Disconnected => (
-                    egui::Color32::from_rgb(150, 150, 150),
-                    "DISCONNECTED",
-                    "○"
-                ),
-                ConnectionStatus::Error => (
-                    egui::Color32::from_rgb(255, 100, 100),
-                    "ERROR",
-                    "✕"
-                ),
-            };
+        // Show per-server connection status
+        if status.servers.is_empty() {
+            ui.label(egui::RichText::new("No servers configured")
+                .color(egui::Color32::from_rgb(150, 150, 150))
+                .size(9.0));
+        } else {
+            for server_status in status.servers.values() {
+                ui.horizontal(|ui| {
+                    // Status indicator
+                    let (status_color, status_icon) = match server_status.status {
+                        ConnectionStatus::Connected => (
+                            egui::Color32::from_rgb(100, 255, 100),
+                            "●"
+                        ),
+                        ConnectionStatus::Connecting => (
+                            egui::Color32::from_rgb(255, 200, 100),
+                            "◐"
+                        ),
+                        ConnectionStatus::Disconnected => (
+                            egui::Color32::from_rgb(150, 150, 150),
+                            "○"
+                        ),
+                        ConnectionStatus::Error => (
+                            egui::Color32::from_rgb(255, 100, 100),
+                            "✕"
+                        ),
+                    };
 
-            ui.label(egui::RichText::new(status_icon)
-                .color(status_color)
-                .size(10.0));
+                    ui.label(egui::RichText::new(status_icon)
+                        .color(status_color)
+                        .size(10.0));
 
-            ui.label(egui::RichText::new(status_text)
-                .color(status_color)
-                .size(10.0)
-                .monospace()
-                .strong());
-        });
+                    // Server name
+                    ui.label(egui::RichText::new(&server_status.server_name)
+                        .color(egui::Color32::from_rgb(200, 220, 255))
+                        .size(9.0)
+                        .strong());
+                });
 
-        // Connection address (compact)
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(&status.connection_address)
-                .color(egui::Color32::from_rgb(180, 180, 180))
-                .size(8.0)
-                .monospace());
-        });
+                // Server address (compact)
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0); // Indent
+                    ui.label(egui::RichText::new(&server_status.server_address)
+                        .color(egui::Color32::from_rgb(150, 150, 150))
+                        .size(7.5)
+                        .monospace());
+                });
+
+                // Connection stats
+                if server_status.status == ConnectionStatus::Connected {
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0); // Indent
+                        ui.label(egui::RichText::new(format!("{} msgs │ {} aircraft",
+                            server_status.message_count,
+                            server_status.aircraft_count))
+                            .color(egui::Color32::from_rgb(120, 180, 140))
+                            .size(7.5)
+                            .monospace());
+                    });
+                }
+
+                // Error message if any
+                if let Some(ref error) = server_status.last_error {
+                    ui.horizontal(|ui| {
+                        ui.add_space(12.0); // Indent
+                        ui.label(egui::RichText::new(format!("Error: {}", error))
+                            .color(egui::Color32::from_rgb(255, 100, 100))
+                            .size(7.0));
+                    });
+                }
+
+                ui.add_space(3.0);
+            }
+        }
+
+        // Summary stats
+        let connected_count = status.get_connected_server_count();
+        let total_count = status.servers.len();
+        if total_count > 0 {
+            ui.add_space(3.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("{}/{} servers connected",
+                    connected_count, total_count))
+                    .color(egui::Color32::from_rgb(180, 180, 180))
+                    .size(8.0)
+                    .monospace());
+            });
+        }
+
+        // Legacy connection status (for backwards compatibility, can be removed later)
+        if status.connection_status != ConnectionStatus::Disconnected && !status.connection_address.is_empty() {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(&status.connection_address)
+                    .color(egui::Color32::from_rgb(180, 180, 180))
+                    .size(8.0)
+                    .monospace());
+            });
+        }
 
         // Uptime (only if connected)
         if status.connection_status == ConnectionStatus::Connected && status.connection_uptime_seconds > 0 {
