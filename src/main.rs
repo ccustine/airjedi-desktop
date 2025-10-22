@@ -3267,6 +3267,18 @@ impl AirjediApp {
                     });
             });
 
+        // Instructions text below the toolbar
+        egui::Area::new("map_instructions".into())
+            .fixed_pos(egui::pos2(10.0, 75.0))
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    egui::RichText::new("Drag to pan | Scroll/pinch to zoom")
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(200, 200, 200))
+                );
+            });
+
         // Handle smooth scroll-to-zoom with exponential smoothing and cursor-centered behavior
         if scroll_delta.y.abs() > 0.1 {
             // Apply exponential smoothing to scroll delta for smooth zoom
