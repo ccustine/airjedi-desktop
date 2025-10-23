@@ -238,6 +238,7 @@ fn main() -> Result<(), eframe::Error> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 800.0])
             .with_title("AirJedi Desktop"),
+        renderer: eframe::Renderer::Wgpu,  // Force wgpu (Metal on macOS) instead of deprecated OpenGL
         ..Default::default()
     };
 
