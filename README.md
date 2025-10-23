@@ -10,7 +10,7 @@
 
 This is currently a personal project to explore the use of AI development tools to develop and build highly performant and efficient message processing from SDR and other wireless or digital sensors. This sub-project is a native desktop application for tracking aircraft in real-time using ADS-B data. Built with Rust 🦀 and egui for maximum performance and multiplatform deployment.
 
-![AirJedi Desktop Screenshot](assets/airjedi1.png)
+![AirJedi Desktop Screenshot](assets/aj2.png)
 
 [Features](#-features) • [Quick Start](#-quick-start) • [Configuration](#-configuration) • [Architecture](#-architecture) • [License](#-license)
 
