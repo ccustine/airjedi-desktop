@@ -107,6 +107,14 @@ pub struct AppConfig {
     /// Aircraft list panel width in pixels
     #[serde(default = "default_aircraft_list_width")]
     pub aircraft_list_width: f32,
+
+    /// Override GPS latitude (for devices without GPS)
+    #[serde(default)]
+    pub override_gps_latitude: Option<f64>,
+
+    /// Override GPS longitude (for devices without GPS)
+    #[serde(default)]
+    pub override_gps_longitude: Option<f64>,
 }
 
 // Default value functions for serde
@@ -142,6 +150,8 @@ impl Default for AppConfig {
             airport_filter: "FrequentlyUsed".to_string(),
             aircraft_list_expanded: true,
             aircraft_list_width: 350.0,
+            override_gps_latitude: None,
+            override_gps_longitude: None,
         }
     }
 }
@@ -198,6 +208,8 @@ impl AppConfig {
             airport_filter: legacy.airport_filter.unwrap_or_else(|| "FrequentlyUsed".to_string()),
             aircraft_list_expanded: legacy.aircraft_list_expanded.unwrap_or(true),
             aircraft_list_width: legacy.aircraft_list_width.unwrap_or(350.0),
+            override_gps_latitude: None,
+            override_gps_longitude: None,
         }
     }
 

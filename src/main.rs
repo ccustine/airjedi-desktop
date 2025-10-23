@@ -135,7 +135,13 @@ fn get_gps_location() -> Option<(f64, f64)> {
     None
 }
 
-fn get_current_location() -> Option<(f64, f64)> {
+fn get_current_location(config: &config::AppConfig) -> Option<(f64, f64)> {
+    // Check for override GPS location first
+    if let (Some(lat), Some(lon)) = (config.override_gps_latitude, config.override_gps_longitude) {
+        println!("Using override GPS location: {}, {}", lat, lon);
+        return Some((lat, lon));
+    }
+
     println!("Fetching current location...");
 
     // Try GPS first (macOS only)
@@ -625,6 +631,9 @@ struct AirjediApp {
     config: config::AppConfig,
     // Server UI edit state (server_id -> (name, address))
     server_edit_state: std::collections::HashMap<String, (String, String)>,
+    // GPS override UI state
+    gps_override_lat_text: String,
+    gps_override_lon_text: String,
     // UI window state
     show_map_overlays_window: bool,
     show_settings_window: bool,
@@ -960,6 +969,8 @@ impl AirjediApp {
             following_aircraft: false,
             config: config.clone(),
             server_edit_state: std::collections::HashMap::new(),
+            gps_override_lat_text: String::new(),
+            gps_override_lon_text: String::new(),
             show_map_overlays_window: false,
             show_settings_window: false,
             show_filters_window: false,
@@ -2457,7 +2468,7 @@ impl eframe::App for AirjediApp {
                 }
                 StartupState::DetectingLocation => {
                     // Get current GPS location (this may block briefly)
-                    let (lat, lon) = get_current_location()
+                    let (lat, lon) = get_current_location(&self.config)
                         .unwrap_or_else(|| {
                             self.system_status.lock().unwrap().add_diagnostic(
                                 DiagnosticLevel::Info,
@@ -3121,6 +3132,158 @@ impl eframe::App for AirjediApp {
                         eprintln!("Failed to save config: {}", e);
                     }
                 }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // GPS Override section
+                ui.heading(egui::RichText::new("Location Override")
+                    .size(12.0)
+                    .strong());
+
+                ui.add_space(8.0);
+
+                // Display current receiver location
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Current Location:")
+                        .color(egui::Color32::from_rgb(150, 150, 150))
+                        .size(9.0));
+                    ui.label(egui::RichText::new(format!("{:.4}°, {:.4}°", self.receiver_lat, self.receiver_lon))
+                        .color(egui::Color32::from_rgb(100, 200, 200))
+                        .size(9.0)
+                        .monospace());
+                });
+
+                ui.add_space(4.0);
+
+                // Check if override is currently set
+                let has_override = self.config.override_gps_latitude.is_some() && self.config.override_gps_longitude.is_some();
+                if has_override {
+                    ui.label(egui::RichText::new("✓ Override is active")
+                        .color(egui::Color32::from_rgb(100, 255, 100))
+                        .size(9.0));
+                } else {
+                    ui.label(egui::RichText::new("Using automatic location detection")
+                        .color(egui::Color32::from_rgb(150, 150, 150))
+                        .size(9.0));
+                }
+
+                ui.add_space(8.0);
+
+                // Latitude input
+                ui.horizontal(|ui| {
+                    ui.label("Latitude:");
+                    ui.add(egui::TextEdit::singleline(&mut self.gps_override_lat_text)
+                        .hint_text("-90 to 90")
+                        .desired_width(100.0));
+                    ui.label(egui::RichText::new("(-90° to 90°)")
+                        .size(8.0)
+                        .color(egui::Color32::from_rgb(120, 120, 120)));
+                });
+
+                // Longitude input
+                ui.horizontal(|ui| {
+                    ui.label("Longitude:");
+                    ui.add(egui::TextEdit::singleline(&mut self.gps_override_lon_text)
+                        .hint_text("-180 to 180")
+                        .desired_width(100.0));
+                    ui.label(egui::RichText::new("(-180° to 180°)")
+                        .size(8.0)
+                        .color(egui::Color32::from_rgb(120, 120, 120)));
+                });
+
+                ui.add_space(8.0);
+
+                // Set Override button
+                ui.horizontal(|ui| {
+                    if ui.button("Set Override").clicked() {
+                        // Try to parse the input values
+                        let lat_result = self.gps_override_lat_text.trim().parse::<f64>();
+                        let lon_result = self.gps_override_lon_text.trim().parse::<f64>();
+
+                        match (lat_result, lon_result) {
+                            (Ok(lat), Ok(lon)) if lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0 => {
+                                // Valid coordinates - save to config
+                                self.config.override_gps_latitude = Some(lat);
+                                self.config.override_gps_longitude = Some(lon);
+
+                                // Update receiver location immediately
+                                self.receiver_lat = lat;
+                                self.receiver_lon = lon;
+                                self.map_center_lat = lat;
+                                self.map_center_lon = lon;
+
+                                // Update ConnectionManager center
+                                self.connection_manager.lock().unwrap().set_center(lat, lon);
+
+                                // Save config
+                                if let Err(e) = self.config.save() {
+                                    eprintln!("Failed to save config: {}", e);
+                                    self.system_status.lock().unwrap().add_diagnostic(
+                                        DiagnosticLevel::Error,
+                                        format!("Failed to save GPS override: {}", e)
+                                    );
+                                } else {
+                                    self.system_status.lock().unwrap().add_diagnostic(
+                                        DiagnosticLevel::Info,
+                                        format!("GPS override set to {:.4}°, {:.4}°", lat, lon)
+                                    );
+                                }
+
+                                // Clear input fields
+                                self.gps_override_lat_text.clear();
+                                self.gps_override_lon_text.clear();
+                            }
+                            (Ok(lat), Ok(_lon)) if lat < -90.0 || lat > 90.0 => {
+                                self.system_status.lock().unwrap().add_diagnostic(
+                                    DiagnosticLevel::Error,
+                                    "Invalid latitude: must be between -90 and 90".to_string()
+                                );
+                            }
+                            (Ok(_lat), Ok(lon)) if lon < -180.0 || lon > 180.0 => {
+                                self.system_status.lock().unwrap().add_diagnostic(
+                                    DiagnosticLevel::Error,
+                                    "Invalid longitude: must be between -180 and 180".to_string()
+                                );
+                            }
+                            _ => {
+                                self.system_status.lock().unwrap().add_diagnostic(
+                                    DiagnosticLevel::Error,
+                                    "Invalid GPS coordinates: please enter valid numbers".to_string()
+                                );
+                            }
+                        }
+                    }
+
+                    // Clear Override button
+                    if ui.button("Clear Override").clicked() {
+                        // Clear the override
+                        self.config.override_gps_latitude = None;
+                        self.config.override_gps_longitude = None;
+
+                        // Save config
+                        if let Err(e) = self.config.save() {
+                            eprintln!("Failed to save config: {}", e);
+                        } else {
+                            self.system_status.lock().unwrap().add_diagnostic(
+                                DiagnosticLevel::Info,
+                                "GPS override cleared - will use automatic detection on next restart".to_string()
+                            );
+                        }
+
+                        // Clear input fields
+                        self.gps_override_lat_text.clear();
+                        self.gps_override_lon_text.clear();
+                    }
+                });
+
+                ui.add_space(4.0);
+
+                // Help text
+                ui.label(egui::RichText::new("💡 Set your ADS-B receiver location for accurate range calculations")
+                    .size(8.0)
+                    .color(egui::Color32::from_rgb(150, 150, 150)));
 
                 ui.add_space(8.0);
                 ui.separator();
