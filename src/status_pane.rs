@@ -12,6 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! System status UI panel.
+//!
+//! Renders connection status, message statistics, diagnostics log, and
+//! performance metrics in a collapsible side panel with sparkline visualization
+//! of position update rates.
+
 use egui;
 use crate::status::{SystemStatus, ConnectionStatus, DiagnosticLevel};
 use std::time::Instant;

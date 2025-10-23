@@ -12,6 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Async TCP client for BaseStation ADS-B feeds.
+//!
+//! Handles connection to BaseStation protocol TCP feeds with automatic
+//! reconnection, hot-reload of server addresses, and graceful shutdown.
+//! Implements periodic cleanup of stale aircraft data.
+
 use log::{info, warn, error};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, BufReader};

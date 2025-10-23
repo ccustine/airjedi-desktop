@@ -12,6 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Application configuration management.
+//!
+//! This module handles persistent configuration storage using TOML format.
+//! It supports multi-server configurations, UI preferences, GPS location overrides,
+//! and automatic migration from legacy single-server configs.
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

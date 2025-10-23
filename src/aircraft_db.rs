@@ -12,6 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Aircraft registration and metadata database.
+//!
+//! Provides lookups from ICAO hex codes to aircraft registration numbers
+//! and types. Data is loaded from compressed CSV files bundled with the
+//! application.
+
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;

@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Aircraft photo metadata fetching service.
+//!
+//! Fetches aircraft photos and photographer credits from planespotters.net
+//! API with request throttling and caching to avoid excessive API calls.
+
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

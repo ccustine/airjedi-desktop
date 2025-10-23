@@ -12,6 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Aviation data loading and spatial queries.
+//!
+//! This module provides access to airport, runway, and navaid data from
+//! OurAirports dataset. It supports automatic downloading of CSV files,
+//! spatial bounding box queries, and filtering by airport type and service.
+//!
+//! Data sources:
+//! - Airports: Global airport database with ICAO codes and types
+//! - Runways: Runway endpoints and surface information
+//! - Navaids: VOR, NDB, DME navigation aids with frequencies
+
+use log::info;
 use serde::Deserialize;
 use std::fs::File;
 use std::io::BufReader;
@@ -229,7 +241,7 @@ impl AviationData {
             count += 1;
         }
 
-        println!("Loaded {} airports", count);
+        info!("Loaded {} airports", count);
         Ok(count)
     }
 
@@ -249,7 +261,7 @@ impl AviationData {
             }
         }
 
-        println!("Loaded {} runways", count);
+        info!("Loaded {} runways", count);
         Ok(count)
     }
 
@@ -266,7 +278,7 @@ impl AviationData {
             count += 1;
         }
 
-        println!("Loaded {} navaids", count);
+        info!("Loaded {} navaids", count);
         Ok(count)
     }
 
@@ -351,11 +363,11 @@ impl AviationData {
 
             // Skip if file already exists
             if file_path.exists() {
-                println!("{} already exists, skipping download", filename);
+                info!("{} already exists, skipping download", filename);
                 continue;
             }
 
-            println!("Downloading {} from {}...", filename, url);
+            info!("Downloading {} from {}...", filename, url);
 
             // Download the file
             let response = reqwest::get(*url).await?;
@@ -363,7 +375,7 @@ impl AviationData {
 
             // Write to file
             std::fs::write(&file_path, &bytes)?;
-            println!("Downloaded {} ({} bytes)", filename, bytes.len());
+            info!("Downloaded {} ({} bytes)", filename, bytes.len());
         }
 
         Ok(())

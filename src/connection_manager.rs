@@ -12,6 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Multi-server ADS-B connection management.
+//!
+//! This module manages multiple simultaneous connections to different ADS-B feeds,
+//! each with its own lifecycle control. It provides hot-reload capabilities for
+//! server addresses and independent enable/disable control per server.
+//!
+//! Key features:
+//! - Multiple concurrent server connections with independent aircraft trackers
+//! - Hot-reload of server addresses without restarting connections
+//! - Per-server enable/disable without removing configuration
+//! - Merged aircraft view across all active servers
+//! - Graceful shutdown with proper cleanup
+
 use log::{info, warn};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

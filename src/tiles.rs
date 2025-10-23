@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Web Mercator projection utilities for map rendering.
+//!
+//! Provides coordinate conversion between latitude/longitude and Web Mercator
+//! tile coordinates used by standard web map tiles.
+
 /// Web Mercator projection utilities
 pub struct WebMercator;
 

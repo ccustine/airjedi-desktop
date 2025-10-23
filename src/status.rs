@@ -12,6 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! System status and diagnostics tracking.
+//!
+//! This module provides comprehensive status tracking for the application including
+//! per-server connection status, message statistics, diagnostic messages, and
+//! performance metrics. It supports sparkline visualization of position update rates.
+
 use chrono::{DateTime, Utc};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};

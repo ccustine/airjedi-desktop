@@ -12,6 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Aircraft tracking and BaseStation protocol parsing.
+//!
+//! This module handles ADS-B message parsing from BaseStation-format TCP feeds and
+//! maintains aircraft state with position history. It provides thread-safe aircraft
+//! tracking with validation of position data to prevent erroneous jumps and distance
+//! filtering based on receiver location.
+//!
+//! The main types are:
+//! - [`Aircraft`] - Thread-safe wrapper around aircraft data with Arc-based cloning
+//! - [`AircraftTracker`] - Manages a collection of aircraft and parses BaseStation messages
+//! - [`PositionPoint`] - Individual position sample with timestamp and altitude
+//!
+//! Position validation includes:
+//! - Maximum distance filtering (400 miles by default)
+//! - Jump detection to reject positions that teleport >10 miles
+//! - Consecutive rejection handling to recover from data delays
+
 use log::{info, warn};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Mutex};

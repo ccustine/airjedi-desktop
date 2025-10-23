@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Aircraft type code database.
+//!
+//! Provides mapping from ICAO aircraft type codes (e.g., "B738") to
+//! human-readable descriptions (e.g., "Boeing 737-800").
+
 use csv::ReaderBuilder;
 use log::info;
 use std::collections::HashMap;

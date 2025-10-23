@@ -5,6 +5,33 @@ edition = "2021"
 license = "Apache-2.0"
 authors = ["Chris Custine <124975+ccustine@users.noreply.github.com>"]
 
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+
+[lints.clippy]
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+
+# Restriction lints for better code quality
+allow_attributes_without_reason = "warn"
+undocumented_unsafe_blocks = "warn"
+map_err_ignore = "warn"
+string_to_string = "warn"
+
+# Opt-out of pedantic lints that don't fit this codebase
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+
 [dependencies]
 eframe = "0.33"
 egui = "0.33"
@@ -30,6 +57,7 @@ confy = "0.6"
 webbrowser = "1.0.6"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 tokio-util = "0.7"
+mimalloc = "0.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

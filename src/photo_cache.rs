@@ -12,6 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Aircraft photo texture cache and loading.
+//!
+//! Manages async loading of aircraft photos from URLs, conversion to egui
+//! textures, and disk caching with SHA256-based filenames. Handles texture
+//! lifecycle and prevents duplicate downloads.
+
 use sha2::{Sha256, Digest};
 use std::fs;
 use std::path::PathBuf;

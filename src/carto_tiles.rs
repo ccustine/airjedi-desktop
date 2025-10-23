@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Carto CDN map tile source.
+//!
+//! Provides dark basemap tiles from Carto CDN with subdomain load balancing
+//! for improved performance and reliability.
+
 use walkers::sources::{Attribution, TileSource};
 use walkers::TileId;
 
