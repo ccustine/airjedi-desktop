@@ -54,6 +54,7 @@ impl PhotoCache {
     }
 
     /// Check if image is cached
+    #[allow(dead_code)]
     pub fn is_cached(&self, url: &str) -> bool {
         self.get_cache_path(url).exists()
     }
@@ -101,6 +102,7 @@ impl PhotoCache {
     }
 
     /// Check if download is pending
+    #[allow(dead_code)]
     pub fn is_pending(&self, url: &str) -> bool {
         self.pending_downloads.lock().unwrap().contains(url)
     }
@@ -267,6 +269,7 @@ impl PhotoTextureManager {
     }
 
     /// Get texture if already loaded (non-blocking)
+    #[allow(dead_code)]
     pub fn get_texture(&self, url: &str) -> Option<egui::TextureHandle> {
         self.textures.lock().unwrap().get(url).cloned()
     }

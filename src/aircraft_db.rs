@@ -24,7 +24,9 @@ pub struct AircraftInfo {
     pub reg: Option<String>,
     #[serde(rename = "icaotype")]
     pub icao_type: Option<String>,
+    #[allow(dead_code)]
     pub year: Option<String>,
+    #[allow(dead_code)]
     pub manufacturer: Option<String>,
     pub model: Option<String>,
 }

@@ -60,7 +60,7 @@ impl StatusPane {
             return;
         }
 
-        let screen_height = ctx.screen_rect().height();
+        let screen_height = ctx.content_rect().height();
 
         egui::Window::new("System Status")
             .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(10.0, -10.0))

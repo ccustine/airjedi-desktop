@@ -72,6 +72,7 @@ pub struct AircraftData {
     pub position_history: Vec<PositionPoint>,
     pub consecutive_rejections: u32,
     // Server source tracking
+    #[allow(dead_code)]
     pub source_server_id: String,
     pub source_server_name: String,
     // Metadata fields
@@ -159,6 +160,7 @@ impl Aircraft {
             .velocity
     }
 
+    #[allow(dead_code)]
     pub fn vertical_rate(&self) -> Option<i32> {
         self.inner.read()
             .expect("Aircraft data lock poisoned - unrecoverable state")
@@ -183,6 +185,7 @@ impl Aircraft {
             .aircraft_type.clone()
     }
 
+    #[allow(dead_code)]
     pub fn photo_url(&self) -> Option<String> {
         self.inner.read()
             .expect("Aircraft data lock poisoned - unrecoverable state")
@@ -195,6 +198,7 @@ impl Aircraft {
             .photo_thumbnail_url.clone()
     }
 
+    #[allow(dead_code)]
     pub fn photographer(&self) -> Option<String> {
         self.inner.read()
             .expect("Aircraft data lock poisoned - unrecoverable state")
@@ -207,6 +211,7 @@ impl Aircraft {
             .metadata_fetched
     }
 
+    #[allow(dead_code)]
     pub fn source_server_id(&self) -> String {
         self.inner.read()
             .expect("Aircraft data lock poisoned - unrecoverable state")
@@ -221,6 +226,7 @@ impl Aircraft {
 
     /// Execute a closure with read-only access to position history
     /// This avoids cloning the entire vector, which is expensive when called every frame
+    #[allow(dead_code)]
     pub fn with_position_history<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&[PositionPoint]) -> R,
@@ -232,6 +238,7 @@ impl Aircraft {
 
     /// Get a cloned copy of the position history
     /// Note: This clones the entire vector - prefer `with_position_history()` for read-only access
+    #[allow(dead_code)]
     pub fn position_history(&self) -> Vec<PositionPoint> {
         self.inner.read()
             .expect("Aircraft data lock poisoned - unrecoverable state")
@@ -376,6 +383,7 @@ impl AircraftTracker {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_status(&mut self, status: Arc<Mutex<SystemStatus>>) {
         self.status = Some(status);
     }

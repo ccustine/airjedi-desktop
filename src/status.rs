@@ -44,6 +44,7 @@ pub enum DiagnosticLevel {
 #[derive(Debug, Clone)]
 pub struct ServerStatus {
     /// Unique server ID
+    #[allow(dead_code)]
     pub server_id: String,
 
     /// Server display name
@@ -88,6 +89,7 @@ impl ServerStatus {
     }
 
     /// Get connection uptime in seconds
+    #[allow(dead_code)]
     pub fn uptime_seconds(&self) -> u64 {
         if self.status == ConnectionStatus::Connected {
             if let Some(connected) = self.connected_at {
@@ -108,6 +110,7 @@ pub struct SystemStatus {
     // Connection status
     pub connection_status: ConnectionStatus,
     pub connection_address: String,
+    #[allow(dead_code)]
     pub last_connection_attempt: Option<DateTime<Utc>>,
     pub last_successful_connection: Option<DateTime<Utc>>,
     pub connection_uptime_seconds: u64,
@@ -183,6 +186,7 @@ impl SystemStatus {
     }
 
     /// Update connection status
+    #[allow(dead_code)]
     pub fn set_connection_status(&mut self, status: ConnectionStatus) {
         self.connection_status = status;
 
@@ -209,6 +213,7 @@ impl SystemStatus {
     }
 
     /// Record a connection error
+    #[allow(dead_code)]
     pub fn set_connection_error(&mut self, error: String) {
         self.connection_status = ConnectionStatus::Error;
         self.connection_uptime_seconds = 0;
@@ -217,6 +222,7 @@ impl SystemStatus {
     }
 
     /// Increment message counter
+    #[allow(dead_code)]
     pub fn increment_message_count(&mut self) {
         self.total_messages_received += 1;
     }
@@ -415,21 +421,25 @@ impl SystemStatus {
     }
 
     /// Get status for a specific server
+    #[allow(dead_code)]
     pub fn get_server_status(&self, server_id: &str) -> Option<&ServerStatus> {
         self.servers.get(server_id)
     }
 
     /// Get all server statuses
+    #[allow(dead_code)]
     pub fn get_all_server_statuses(&self) -> Vec<&ServerStatus> {
         self.servers.values().collect()
     }
 
     /// Get total message count across all servers
+    #[allow(dead_code)]
     pub fn get_total_server_messages(&self) -> u64 {
         self.servers.values().map(|s| s.message_count).sum()
     }
 
     /// Get total aircraft count across all servers
+    #[allow(dead_code)]
     pub fn get_total_server_aircraft(&self) -> usize {
         self.servers.values().map(|s| s.aircraft_count).sum()
     }

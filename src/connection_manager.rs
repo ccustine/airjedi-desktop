@@ -252,6 +252,7 @@ impl ConnectionManager {
     }
 
     /// Get aircraft from a specific server
+    #[allow(dead_code)]
     pub fn get_aircraft_by_server(&self, server_id: &str) -> Option<Vec<Aircraft>> {
         self.connections.get(server_id).map(|conn| conn.get_aircraft())
     }
@@ -267,6 +268,7 @@ impl ConnectionManager {
     }
 
     /// Get all aircraft grouped by server
+    #[allow(dead_code)]
     pub fn get_all_aircraft_by_server(&self) -> HashMap<String, Vec<Aircraft>> {
         let mut result = HashMap::new();
 
@@ -290,6 +292,7 @@ impl ConnectionManager {
     }
 
     /// Get server configurations
+    #[allow(dead_code)]
     pub fn get_server_configs(&self) -> Vec<ServerConfig> {
         self.connections.values()
             .map(|conn| conn.config.clone())
@@ -304,11 +307,13 @@ impl ConnectionManager {
     }
 
     /// Get the number of managed connections
+    #[allow(dead_code)]
     pub fn connection_count(&self) -> usize {
         self.connections.len()
     }
 
     /// Get the number of enabled/active connections
+    #[allow(dead_code)]
     pub fn active_connection_count(&self) -> usize {
         self.connections.values().filter(|conn| conn.config.enabled).count()
     }
@@ -329,6 +334,7 @@ impl ConnectionManager {
     }
 
     /// Cleanup old aircraft and position history for all trackers
+    #[allow(dead_code)]
     pub fn cleanup_all(&self, max_age_seconds: i64) {
         for connection in self.connections.values() {
             connection.tracker.lock().unwrap().cleanup_old(max_age_seconds);

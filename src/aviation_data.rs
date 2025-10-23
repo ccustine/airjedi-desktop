@@ -54,6 +54,7 @@ impl Airport {
     }
 
     /// Check if this is a small airport
+    #[allow(dead_code)]
     pub fn is_small(&self) -> bool {
         self.airport_type == "small_airport"
     }
@@ -95,21 +96,25 @@ pub struct Runway {
     #[serde(rename = "airport_ident")]
     pub airport_icao: String,
 
+    #[allow(dead_code)]
     #[serde(rename = "length_ft")]
     pub length_ft: Option<i32>,
 
+    #[allow(dead_code)]
     #[serde(rename = "width_ft")]
     pub width_ft: Option<i32>,
 
     #[serde(rename = "surface")]
     pub surface: String,
 
+    #[allow(dead_code)]
     #[serde(rename = "lighted")]
     pub lighted: Option<i32>,
 
     #[serde(rename = "closed")]
     pub closed: Option<i32>,
 
+    #[allow(dead_code)]
     #[serde(rename = "le_ident")]
     pub le_ident: String,
 
@@ -119,6 +124,7 @@ pub struct Runway {
     #[serde(rename = "le_longitude_deg")]
     pub le_longitude: Option<f64>,
 
+    #[allow(dead_code)]
     #[serde(rename = "he_ident")]
     pub he_ident: String,
 
@@ -265,6 +271,7 @@ impl AviationData {
     }
 
     /// Load all aviation data from a directory containing the CSV files
+    #[allow(dead_code)]
     pub fn load_from_directory<P: AsRef<Path>>(directory: P) -> Result<Self, Box<dyn std::error::Error>> {
         let mut data = Self::new();
 

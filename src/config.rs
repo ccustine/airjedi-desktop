@@ -212,11 +212,13 @@ impl AppConfig {
     }
 
     /// Get a server by ID
+    #[allow(dead_code)]
     pub fn get_server(&self, id: &str) -> Option<&ServerConfig> {
         self.servers.iter().find(|s| s.id == id)
     }
 
     /// Get a mutable server by ID
+    #[allow(dead_code)]
     pub fn get_server_mut(&mut self, id: &str) -> Option<&mut ServerConfig> {
         self.servers.iter_mut().find(|s| s.id == id)
     }

@@ -19,9 +19,11 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PhotoInfo {
+    #[allow(dead_code)]
     pub id: String,
     pub thumbnail: ThumbnailInfo,
     pub thumbnail_large: ThumbnailInfo,
+    #[allow(dead_code)]
     pub link: String,
     pub photographer: String,
 }
@@ -29,12 +31,15 @@ pub struct PhotoInfo {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ThumbnailInfo {
     pub src: String,
+    #[allow(dead_code)]
     pub size: ThumbnailSize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ThumbnailSize {
+    #[allow(dead_code)]
     pub width: u32,
+    #[allow(dead_code)]
     pub height: u32,
 }
 
@@ -45,7 +50,9 @@ struct PlanespottersResponse {
 
 #[derive(Debug, Clone)]
 pub struct AircraftMetadata {
+    #[allow(dead_code)]
     pub registration: Option<String>,
+    #[allow(dead_code)]
     pub aircraft_type: Option<String>,
     pub photo_url: Option<String>,
     pub photo_thumbnail_url: Option<String>,
@@ -165,6 +172,7 @@ impl MetadataService {
     }
 
     /// Clear old cache entries
+    #[allow(dead_code)]
     pub fn cleanup_cache(&self) {
         if let Ok(mut cache) = self.cache.lock() {
             cache.retain(|_, entry| entry.timestamp.elapsed() < self.cache_ttl);

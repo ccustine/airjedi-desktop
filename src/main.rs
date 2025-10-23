@@ -39,7 +39,7 @@ use status::{SystemStatus, DiagnosticLevel};
 use status_pane::StatusPane;
 use std::sync::{Arc, Mutex};
 use serde::Deserialize;
-use tiles::{TileManager, WebMercator};
+use tiles::WebMercator;
 use config::DEFAULT_SERVER_ADDRESS;
 use walkers::{HttpTiles, MapMemory, HttpOptions, lat_lon};
 
@@ -578,8 +578,6 @@ struct AirjediApp {
     // Walkers tile management
     http_tiles: HttpTiles,
     map_memory: MapMemory,
-    // Legacy tile manager (will be removed)
-    tile_manager: TileManager,
     tile_error: Option<String>,
     selected_aircraft: Option<String>, // ICAO of selected aircraft
     previous_selected_aircraft: Option<String>, // Track selection changes for auto-scroll
@@ -590,10 +588,6 @@ struct AirjediApp {
     show_navaids: bool,
     time_limited_trails: bool,
     airport_filter: AirportFilter,
-    // Cached bounding box for spatial filtering
-    cached_bounds: Option<(f64, f64, f64, f64)>, // (min_lat, max_lat, min_lon, max_lon)
-    last_bounds_zoom: f32,
-    last_bounds_center: (f64, f64),
     // Cached aviation data to avoid cloning thousands of objects every frame
     cached_aviation_data: Option<(Vec<Airport>, Vec<(String, Vec<aviation_data::Runway>)>, Vec<Navaid>)>,
     last_aviation_cache_bounds: Option<(f64, f64, f64, f64)>,
@@ -926,7 +920,6 @@ impl AirjediApp {
             logo_texture,
             http_tiles,
             map_memory,
-            tile_manager: TileManager::new(),
             tile_error: None,
             selected_aircraft: None,
             previous_selected_aircraft: None,
@@ -937,9 +930,6 @@ impl AirjediApp {
             show_navaids: config.show_navaids,
             time_limited_trails: config.time_limited_trails,
             airport_filter,
-            cached_bounds: None,
-            last_bounds_zoom: 0.0,
-            last_bounds_center: (0.0, 0.0),
             cached_aviation_data: None,
             last_aviation_cache_bounds: None,
             last_aviation_cache_filter: airport_filter,

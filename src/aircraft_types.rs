@@ -75,12 +75,14 @@ impl AircraftTypeDatabase {
 
     /// Get the number of type codes in the database
     #[must_use]
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.type_map.len()
     }
 
     /// Check if the database is empty
     #[must_use]
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.type_map.is_empty()
     }
