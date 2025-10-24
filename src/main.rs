@@ -31,6 +31,9 @@ mod status;
 mod status_pane;
 mod tcp_client;
 mod tiles;
+mod video_protocol;
+mod video_player;
+mod video_manager;
 
 use aircraft_db::AircraftDatabase;
 use aircraft_types::AircraftTypeDatabase;
@@ -195,6 +198,13 @@ fn get_current_location(config: &config::AppConfig) -> Option<(f64, f64)> {
 fn main() -> Result<(), eframe::Error> {
     // Initialize logging
     env_logger::init();
+
+    // Initialize GStreamer for video playback
+    if let Err(e) = video_player::init_gstreamer() {
+        eprintln!("Warning: Failed to initialize GStreamer: {}. Video playback will be unavailable.", e);
+    } else {
+        println!("GStreamer initialized successfully");
+    }
 
     // Load configuration from disk (or create default if it doesn't exist)
     let mut config = match config::AppConfig::load() {
@@ -652,6 +662,8 @@ struct AirjediApp {
     aircraft_list_rect: Option<egui::Rect>,
     // Smoothed scroll zoom velocity for jitter-free zooming
     scroll_zoom_velocity: f32,
+    // Video stream management
+    video_manager: video_manager::VideoManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -985,6 +997,7 @@ impl AirjediApp {
             aircraft_list_width: config.aircraft_list_width,
             aircraft_list_rect: None,
             scroll_zoom_velocity: 0.0,
+            video_manager: video_manager::VideoManager::new(),
         }
     }
 
@@ -3306,6 +3319,69 @@ impl eframe::App for AirjediApp {
                         .color(egui::Color32::from_rgb(120, 120, 120))
                         .monospace());
                 }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // Video Streaming Test section
+                ui.heading(egui::RichText::new("Video Streaming Test")
+                    .size(12.0)
+                    .strong());
+
+                ui.add_space(8.0);
+
+                // Video manager status
+                let video_status = self.video_manager.status_summary();
+                ui.label(egui::RichText::new(format!("Status: {}", video_status))
+                    .color(egui::Color32::from_rgb(150, 200, 200))
+                    .size(9.0));
+
+                ui.add_space(8.0);
+
+                // Test stream button
+                if ui.button("📹 Open Test Video Stream").clicked() {
+                    use crate::video_protocol::VideoLink;
+
+                    // Use rtsp.stream test pattern (publicly available)
+                    let test_link = VideoLink::new("rtsp://localhost:8554/mystream")
+                        .with_title("Test Video - Pattern")
+                        .with_description("Demo RTSP stream for testing video playback");
+
+                    match self.video_manager.open_stream(test_link) {
+                        Ok(_) => {
+                            self.system_status.lock().unwrap().add_diagnostic(
+                                DiagnosticLevel::Info,
+                                "Test video stream opened successfully".to_string()
+                            );
+                        }
+                        Err(e) => {
+                            self.system_status.lock().unwrap().add_diagnostic(
+                                DiagnosticLevel::Error,
+                                format!("Failed to open test video: {}", e)
+                            );
+                        }
+                    }
+                }
+
+                ui.add_space(4.0);
+
+                // Close all streams button (if any are open)
+                if self.video_manager.active_stream_count() > 0 {
+                    if ui.button("✖ Close All Video Streams").clicked() {
+                        self.video_manager.close_all();
+                        self.system_status.lock().unwrap().add_diagnostic(
+                            DiagnosticLevel::Info,
+                            "All video streams closed".to_string()
+                        );
+                    }
+                }
+
+                ui.add_space(4.0);
+
+                ui.label(egui::RichText::new("💡 Video streaming requires GStreamer to be installed")
+                    .size(8.0)
+                    .color(egui::Color32::from_rgb(120, 120, 120)));
             });
 
         // Filters window (only shown when opened from View menu)
@@ -3435,6 +3511,9 @@ impl eframe::App for AirjediApp {
             let status = self.system_status.lock().unwrap();
             self.status_pane.render(ctx, &status);
         }
+
+        // Render video player windows
+        self.video_manager.render(ctx);
 
         // Update frame time performance metrics
         let frame_duration = frame_start.elapsed().as_secs_f64() * 1000.0;
