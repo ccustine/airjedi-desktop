@@ -28,6 +28,7 @@ use serde::Deserialize;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use crate::video_protocol::VideoLink;
 
 /// Airport data from OurAirports
 #[derive(Debug, Clone, Deserialize)]
@@ -52,6 +53,10 @@ pub struct Airport {
 
     #[serde(rename = "scheduled_service")]
     pub scheduled_service: String,
+
+    /// Video stream links (not from CSV, populated at runtime)
+    #[serde(skip, default)]
+    pub video_links: Vec<VideoLink>,
 }
 
 impl Airport {
@@ -211,6 +216,68 @@ impl Navaid {
             "NDB" => 4.0,
             _ => 3.5,
         }
+    }
+}
+
+/// Fixed camera location (not associated with airports or aircraft)
+/// These are standalone cameras at specific geographic coordinates
+#[derive(Debug, Clone)]
+pub struct FixedCameraLocation {
+    /// Unique identifier for this location
+    pub id: String,
+
+    /// Human-readable name
+    pub name: String,
+
+    /// Latitude in degrees
+    pub latitude: f64,
+
+    /// Longitude in degrees
+    pub longitude: f64,
+
+    /// Optional description of what this location monitors
+    pub description: Option<String>,
+
+    /// Video stream links for this location
+    pub video_links: Vec<VideoLink>,
+}
+
+impl FixedCameraLocation {
+    /// Create a new fixed camera location
+    #[must_use]
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        latitude: f64,
+        longitude: f64,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            latitude,
+            longitude,
+            description: None,
+            video_links: Vec::new(),
+        }
+    }
+
+    /// Builder method to add description
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Builder method to add a video link
+    #[must_use]
+    pub fn with_video_link(mut self, link: VideoLink) -> Self {
+        self.video_links.push(link);
+        self
+    }
+
+    /// Add a video link to this location
+    pub fn add_video_link(&mut self, link: VideoLink) {
+        self.video_links.push(link);
     }
 }
 

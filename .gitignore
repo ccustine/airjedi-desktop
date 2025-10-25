@@ -14,3 +14,5 @@ Cargo.lock
 
 # Downloaded aviation data (auto-fetched from OurAirports)
 data/
+/assets/mediamtx.yml
+/assets/test.mp4

@@ -33,7 +33,7 @@ missing_panics_doc = "allow"
 module_name_repetitions = "allow"
 
 [dependencies]
-eframe = { version = "0.33", features = ["wgpu"] }
+eframe = { version = "0.33", features = ["wgpu", "glow"] }
 egui = "0.33"
 egui_extras = { version = "0.33", features = ["svg", "image"] }
 usvg = "0.45"

@@ -34,6 +34,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Mutex};
 use chrono::{DateTime, Utc};
 use crate::status::SystemStatus;
+use crate::video_protocol::VideoLink;
 
 // Constants for position validation and tracking
 const NAUTICAL_MILE_CONVERSION: f64 = 1.15078; // 1 nautical mile = 1.15078 statute miles
@@ -99,6 +100,8 @@ pub struct AircraftData {
     pub photo_thumbnail_url: Option<String>,
     pub photographer: Option<String>,
     pub metadata_fetched: bool,
+    // Video stream links
+    pub video_links: Vec<VideoLink>,
 }
 
 /// Aircraft wrapper that can be cheaply cloned via Arc
@@ -130,6 +133,7 @@ impl Aircraft {
                 photo_thumbnail_url: None,
                 photographer: None,
                 metadata_fetched: false,
+                video_links: Vec::new(),
             })),
         }
     }
