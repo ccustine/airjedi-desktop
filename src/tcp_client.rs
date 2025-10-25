@@ -117,44 +117,60 @@ async fn connect_and_process(
 
     let reader = BufReader::new(stream);
     let mut lines = reader.lines();
-    let mut cleanup_counter: u32 = 0;
 
-    while let Some(line) = lines.next_line().await? {
-        // Check for cancellation
-        if cancel_token.is_cancelled() {
-            info!("[{}] Connection cancelled during message processing", server_name);
-            return Ok(ReconnectReason::Cancelled);
-        }
+    // Create cleanup timer for periodic aircraft cleanup
+    let mut cleanup_interval = tokio::time::interval(Duration::from_secs(30));
+    cleanup_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        // Parse the BaseStation message - scope lock to drop before next await
-        {
-            let mut tracker_lock = tracker.lock()
-                .expect("Aircraft tracker mutex poisoned");
-            tracker_lock.parse_basestation_message(&line);
-        }
+    loop {
+        tokio::select! {
+            // Process incoming messages
+            line_result = lines.next_line() => {
+                match line_result {
+                    Ok(Some(line)) => {
+                        // Parse the BaseStation message - scope lock to drop before next await
+                        {
+                            let mut tracker_lock = tracker.lock()
+                                .expect("Aircraft tracker mutex poisoned");
+                            tracker_lock.parse_basestation_message(&line);
+                        }
 
-        // Increment message counter for this server
-        status.lock().unwrap().increment_server_message_count(server_id);
+                        // Increment message counter for this server
+                        status.lock().unwrap().increment_server_message_count(server_id);
+                    }
+                    Ok(None) => {
+                        // Stream ended
+                        info!("[{}] Connection closed by server", server_name);
+                        return Ok(ReconnectReason::ConnectionClosed);
+                    }
+                    Err(e) => {
+                        return Err(Box::new(e));
+                    }
+                }
+            }
 
-        // Cleanup old aircraft every N messages
-        cleanup_counter = cleanup_counter.saturating_add(1);
-        if cleanup_counter >= CLEANUP_INTERVAL_MESSAGES {
-            let mut tracker_lock = tracker.lock()
-                .expect("Aircraft tracker mutex poisoned");
-            tracker_lock.cleanup_old(AIRCRAFT_TIMEOUT_SECONDS);
-            cleanup_counter = 0;
+            // Periodic aircraft cleanup
+            _ = cleanup_interval.tick() => {
+                let mut tracker_lock = tracker.lock()
+                    .expect("Aircraft tracker mutex poisoned");
+                tracker_lock.cleanup_old(AIRCRAFT_TIMEOUT_SECONDS);
+            }
 
-            // Check if server address has changed (piggyback on cleanup interval)
-            if address_rx.has_changed().unwrap_or(false) {
+            // React immediately to server address changes
+            _ = address_rx.changed() => {
                 let new_address = address_rx.borrow_and_update().clone();
                 if new_address != address {
-                    info!("Server address changed from {} to {}, reconnecting...", address, new_address);
+                    info!("[{}] Server address changed from {} to {}, reconnecting...",
+                        server_name, address, new_address);
                     return Ok(ReconnectReason::ServerAddressChanged);
                 }
             }
+
+            // Check for cancellation
+            _ = cancel_token.cancelled() => {
+                info!("[{}] Connection cancelled", server_name);
+                return Ok(ReconnectReason::Cancelled);
+            }
         }
     }
-
-    info!("Connection closed by server");
-    Ok(ReconnectReason::ConnectionClosed)
 }

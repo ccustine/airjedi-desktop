@@ -244,11 +244,21 @@ fn main() -> Result<(), eframe::Error> {
         println!("Config file: {}", config_path.display());
     }
 
+    // Platform-specific renderer selection
+    #[cfg(target_os = "macos")]
+    let renderer = eframe::Renderer::Wgpu;  // Force Metal backend on macOS for best performance
+
+    #[cfg(all(target_os = "linux", any(target_arch = "arm", target_arch = "aarch64")))]
+    let renderer = eframe::Renderer::Glow;  // Use OpenGL ES on ARM Linux (Raspberry Pi) for better compatibility
+
+    #[cfg(not(any(target_os = "macos", all(target_os = "linux", any(target_arch = "arm", target_arch = "aarch64")))))]
+    let renderer = eframe::Renderer::default();  // Auto-detect best renderer on other platforms (x86_64 Linux, Windows, etc.)
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 800.0])
             .with_title("AirJedi Desktop"),
-        renderer: eframe::Renderer::Wgpu,  // Force wgpu (Metal on macOS) instead of deprecated OpenGL
+        renderer,
         ..Default::default()
     };
 
@@ -598,6 +608,8 @@ struct AirjediApp {
     map_zoom_level: f32, // Float for smoother pinch-zoom
     // Loading screen
     logo_texture: Option<egui::TextureHandle>,
+    // Aircraft icon texture
+    airplane_texture: Option<egui::TextureHandle>,
     // Walkers tile management
     http_tiles: HttpTiles,
     map_memory: MapMemory,
@@ -701,55 +713,106 @@ impl Default for SortDirection {
 impl AirjediApp {
     // Draw an airplane icon at the given position with rotation based on track angle
     fn draw_aircraft_icon(
+        airplane_texture: Option<&egui::TextureHandle>,
         painter: &egui::Painter,
         pos: egui::Pos2,
         track_degrees: f32,
         color: egui::Color32,
         size: f32,
     ) {
-        // Define airplane shape vertices relative to center (pointing north/up by default)
-        // Vertices in (x, y) format where y is negative for forward
-        let base_vertices = [
-            (0.0, -1.5),      // Nose (front)
-            (-0.3, -0.5),     // Left side of fuselage
-            (-1.0, 0.0),      // Left wing tip
-            (-0.3, 0.2),      // Left wing back
-            (-0.4, 0.8),      // Left tail
-            (-0.2, 0.9),      // Left tail inner
-            (0.0, 0.7),       // Center tail
-            (0.2, 0.9),       // Right tail inner
-            (0.4, 0.8),       // Right tail
-            (0.3, 0.2),       // Right wing back
-            (1.0, 0.0),       // Right wing tip
-            (0.3, -0.5),      // Right side of fuselage
-        ];
+        // If texture failed to load, draw a simple fallback shape
+        let Some(texture) = airplane_texture else {
+            // Fallback: draw a simple triangle pointing in track direction
+            let angle = track_degrees.to_radians();
+            let cos_a = angle.cos();
+            let sin_a = angle.sin();
 
-        // Convert track to radians (track is in degrees, 0 = north)
+            let vertices = [
+                (0.0, -size * 1.5),
+                (-size * 0.5, size),
+                (size * 0.5, size),
+            ];
+
+            let points: Vec<egui::Pos2> = vertices
+                .iter()
+                .map(|(x, y)| {
+                    let rx = x * cos_a - y * sin_a;
+                    let ry = x * sin_a + y * cos_a;
+                    egui::pos2(pos.x + rx, pos.y + ry)
+                })
+                .collect();
+
+            painter.add(egui::Shape::convex_polygon(
+                points,
+                color,
+                egui::Stroke::NONE,
+            ));
+            return;
+        };
+
+        // Calculate final size in pixels (texture is 512x512, scale by size parameter)
+        let texture_size = size * 3.0; // Multiply by 3 to get reasonable screen size
+
+        // Calculate rotation
         let angle = track_degrees.to_radians();
         let cos_a = angle.cos();
         let sin_a = angle.sin();
 
-        // Rotate and scale vertices, then translate to position
-        let points: Vec<egui::Pos2> = base_vertices
+        // Calculate the four corners of a rectangle centered at pos, then rotate them
+        let half_size = texture_size / 2.0;
+
+        // Define corners in local space (relative to center)
+        let local_corners = [
+            egui::vec2(-half_size, -half_size),  // Top-left
+            egui::vec2(half_size, -half_size),   // Top-right
+            egui::vec2(half_size, half_size),    // Bottom-right
+            egui::vec2(-half_size, half_size),   // Bottom-left
+        ];
+
+        // Rotate each corner and translate to world position
+        let rotated_corners: Vec<egui::Pos2> = local_corners
             .iter()
-            .map(|(x, y)| {
-                // Scale
-                let sx = x * size;
-                let sy = y * size;
-                // Rotate
-                let rx = sx * cos_a - sy * sin_a;
-                let ry = sx * sin_a + sy * cos_a;
-                // Translate to position
-                egui::pos2(pos.x + rx, pos.y + ry)
+            .map(|&corner| {
+                // Apply rotation
+                let rotated_x = corner.x * cos_a - corner.y * sin_a;
+                let rotated_y = corner.x * sin_a + corner.y * cos_a;
+                // Translate to world position
+                egui::pos2(pos.x + rotated_x, pos.y + rotated_y)
             })
             .collect();
 
-        // Draw filled airplane shape with no outline
-        painter.add(egui::Shape::convex_polygon(
-            points,
+        // Create mesh with proper UV mapping
+        let mut mesh = egui::Mesh::with_texture(texture.id());
+
+        // Add vertices manually with correct UV coordinates
+        // UV coordinates map texture space (0,0 = top-left, 1,1 = bottom-right)
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: rotated_corners[0],  // Top-left
+            uv: egui::pos2(0.0, 0.0),
             color,
-            egui::Stroke::NONE,
-        ));
+        });
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: rotated_corners[1],  // Top-right
+            uv: egui::pos2(1.0, 0.0),
+            color,
+        });
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: rotated_corners[2],  // Bottom-right
+            uv: egui::pos2(1.0, 1.0),
+            color,
+        });
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: rotated_corners[3],  // Bottom-left
+            uv: egui::pos2(0.0, 1.0),
+            color,
+        });
+
+        // Add triangle indices (two triangles make a quad)
+        // First triangle: 0,1,2 (top-left, top-right, bottom-right)
+        // Second triangle: 0,2,3 (top-left, bottom-right, bottom-left)
+        mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+
+        painter.add(egui::Shape::mesh(mesh));
     }
 
     // Load the AirJedi logo SVG for the loading screen
@@ -808,6 +871,71 @@ impl AirjediApp {
             }
             Err(e) => {
                 eprintln!("Failed to read logo SVG from {}: {}", svg_path, e);
+                None
+            }
+        }
+    }
+
+    // Load the airplane icon SVG for aircraft rendering
+    fn load_airplane_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+        // Read SVG file from disk
+        let svg_path = "assets/airplane1.svg";
+        match std::fs::read(svg_path) {
+            Ok(svg_bytes) => {
+                // Parse SVG tree
+                let opt = usvg::Options::default();
+                match usvg::Tree::from_data(&svg_bytes, &opt) {
+                    Ok(tree) => {
+                        // Render at high resolution (512x512) for crisp display at all zoom levels
+                        // This prevents pixelation artifacts when scaled on screen
+                        let target_size = 512;
+                        let svg_size = tree.size();
+
+                        // Calculate scale to fit SVG into target size while preserving aspect ratio
+                        let scale = (target_size as f32 / svg_size.width().max(svg_size.height())).min(target_size as f32);
+
+                        let width = (svg_size.width() * scale) as u32;
+                        let height = (svg_size.height() * scale) as u32;
+
+                        // Create pixmap for rendering with premultiplied alpha
+                        let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height).unwrap();
+
+                        // Clear to transparent background
+                        pixmap.fill(resvg::tiny_skia::Color::TRANSPARENT);
+
+                        // Render SVG to pixmap
+                        let transform = resvg::tiny_skia::Transform::from_scale(scale, scale);
+                        resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+                        // Convert pixmap to egui ColorImage
+                        let pixels = pixmap.pixels();
+                        let rgba_pixels: Vec<egui::Color32> = pixels.iter()
+                            .map(|p| egui::Color32::from_rgba_premultiplied(p.red(), p.green(), p.blue(), p.alpha()))
+                            .collect();
+
+                        let color_image = egui::ColorImage {
+                            size: [width as usize, height as usize],
+                            source_size: egui::vec2(width as f32, height as f32),
+                            pixels: rgba_pixels,
+                        };
+
+                        // Upload as texture with LINEAR filtering for smooth rotation/scaling
+                        let texture = ctx.load_texture(
+                            "airplane_icon",
+                            color_image,
+                            egui::TextureOptions::LINEAR
+                        );
+                        println!("Airplane SVG loaded successfully at {}x{}", width, height);
+                        Some(texture)
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to parse airplane SVG tree: {}", e);
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to read airplane SVG from {}: {}", svg_path, e);
                 None
             }
         }
@@ -881,6 +1009,9 @@ impl AirjediApp {
         // Load logo for loading screen
         let logo_texture = Self::load_logo_texture(egui_ctx);
 
+        // Load airplane icon texture for aircraft rendering
+        let airplane_texture = Self::load_airplane_texture(egui_ctx);
+
         // Initialize core structures
         let system_status = Arc::new(Mutex::new(SystemStatus::new()));
 
@@ -946,6 +1077,7 @@ impl AirjediApp {
             receiver_lon: default_lon,
             map_zoom_level: config.default_zoom,
             logo_texture,
+            airplane_texture,
             http_tiles,
             map_memory,
             tile_error: None,
@@ -1751,6 +1883,9 @@ impl AirjediApp {
 
         use walkers::Map;
 
+        // Extract airplane texture for use in closure (avoids borrow checker issues)
+        let airplane_texture = self.airplane_texture.as_ref();
+
         // Variable to track hovered items inside the map closure
         let mut detected_hover: Option<HoveredMapItem> = None;
         // Variable to track clicked aircraft
@@ -2051,32 +2186,13 @@ impl AirjediApp {
                 });
             }
 
-            // Aircraft icons and labels
+            // Aircraft rendering - Two-pass approach for proper layering:
+            // Pass 1: Draw label bubbles (callsign and altitude) first
             for aircraft in &aircraft_list {
                 if let (Some(lat), Some(lon)) = (aircraft.latitude(), aircraft.longitude()) {
                     let pos = to_screen(lat, lon);
 
                     if rect.contains(pos) {
-                        let icao = aircraft.icao();
-                        let is_selected = selected_aircraft.as_ref() == Some(&icao);
-
-                        let (color, size) = if is_selected {
-                            (egui::Color32::from_rgb(255, 100, 100), 7.0)
-                        } else {
-                            (egui::Color32::from_rgb(120, 220, 120), 5.0)
-                        };
-
-                        let track = aircraft.track().unwrap_or(0.0) as f32;
-                        Self::draw_aircraft_icon(&painter, pos, track, color, size);
-
-                        if is_selected {
-                            painter.circle_stroke(
-                                pos,
-                                size * 1.8,
-                                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 50)),
-                            );
-                        }
-
                         // Callsign label with background
                         let mut label_offset_y = -10.0;
                         if let Some(ref callsign) = aircraft.callsign() {
@@ -2107,7 +2223,7 @@ impl AirjediApp {
                             label_offset_y += 14.0;
                         }
 
-                        // Altitude label
+                        // Altitude label with background
                         if let Some(alt) = aircraft.altitude() {
                             let alt_text = if alt >= 18000 {
                                 format!("FL{:03}", alt / 100)
@@ -2136,6 +2252,35 @@ impl AirjediApp {
                                 &alt_text,
                                 egui::FontId::proportional(10.0),
                                 egui::Color32::from_rgb(200, 200, 200),
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Pass 2: Draw aircraft icons on top of labels
+            for aircraft in &aircraft_list {
+                if let (Some(lat), Some(lon)) = (aircraft.latitude(), aircraft.longitude()) {
+                    let pos = to_screen(lat, lon);
+
+                    if rect.contains(pos) {
+                        let icao = aircraft.icao();
+                        let is_selected = selected_aircraft.as_ref() == Some(&icao);
+
+                        let (color, size) = if is_selected {
+                            (egui::Color32::from_rgb(255, 100, 100), 8.05)  // Red tint for selected
+                        } else {
+                            (egui::Color32::WHITE, 5.75)  // Original colors for unselected
+                        };
+
+                        let track = aircraft.track().unwrap_or(0.0) as f32;
+                        Self::draw_aircraft_icon(airplane_texture, &painter, pos, track, color, size);
+
+                        if is_selected {
+                            painter.circle_stroke(
+                                pos,
+                                size * 1.8,
+                                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 50)),
                             );
                         }
 
@@ -2619,8 +2764,11 @@ impl eframe::App for AirjediApp {
             let connection_manager = self.connection_manager.lock().unwrap();
             let aircraft_list = connection_manager.get_all_aircraft_merged();  // Cheap Arc clones from all servers
             let total = aircraft_list.len();
+
+            // Capture time once to avoid re-evaluation in the filter closure
+            let now = chrono::Utc::now();
             let active = aircraft_list.iter().filter(|a| {
-                (chrono::Utc::now() - a.last_seen()).num_seconds() < 60
+                (now - a.last_seen()).num_seconds() < 60
             }).count();
 
             // Update per-server aircraft counts
@@ -3339,20 +3487,51 @@ impl eframe::App for AirjediApp {
 
                 ui.add_space(8.0);
 
+                // Test video URL input
+                ui.label(egui::RichText::new("Test Video URL:")
+                    .color(egui::Color32::from_rgb(150, 150, 150))
+                    .size(9.0));
+
+                let mut url_changed = false;
+                ui.horizontal(|ui| {
+                    let text_edit = egui::TextEdit::singleline(&mut self.config.test_video_url)
+                        .hint_text("rtsp://localhost:8554/mystream")
+                        .desired_width(300.0);
+
+                    if ui.add(text_edit).changed() {
+                        url_changed = true;
+                    }
+                });
+
+                // Auto-save when URL changes
+                if url_changed {
+                    if let Err(e) = self.config.save() {
+                        eprintln!("Failed to save config: {}", e);
+                    }
+                }
+
+                ui.add_space(4.0);
+
+                ui.label(egui::RichText::new("💡 Common formats: rtsp://, http://, file://")
+                    .size(8.0)
+                    .color(egui::Color32::from_rgb(120, 120, 120)));
+
+                ui.add_space(8.0);
+
                 // Test stream button
                 if ui.button("📹 Open Test Video Stream").clicked() {
                     use crate::video_protocol::VideoLink;
 
-                    // Use rtsp.stream test pattern (publicly available)
-                    let test_link = VideoLink::new("rtsp://localhost:8554/mystream")
-                        .with_title("Test Video - Pattern")
-                        .with_description("Demo RTSP stream for testing video playback");
+                    // Use configured test video URL
+                    let test_link = VideoLink::new(&self.config.test_video_url)
+                        .with_title("Test Video Stream")
+                        .with_description("User-configured test stream");
 
                     match self.video_manager.open_stream(test_link) {
                         Ok(_) => {
                             self.system_status.lock().unwrap().add_diagnostic(
                                 DiagnosticLevel::Info,
-                                "Test video stream opened successfully".to_string()
+                                format!("Test video stream opened: {}", self.config.test_video_url)
                             );
                         }
                         Err(e) => {

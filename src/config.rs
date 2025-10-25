@@ -78,6 +78,10 @@ struct LegacyAppConfig {
 /// Application configuration stored in TOML format
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
+    /// Configuration schema version for migrations
+    #[serde(default = "default_config_version")]
+    pub config_version: u32,
+
     /// List of configured ADS-B servers
     #[serde(default = "default_servers")]
     pub servers: Vec<ServerConfig>,
@@ -121,9 +125,17 @@ pub struct AppConfig {
     /// Override GPS longitude (for devices without GPS)
     #[serde(default)]
     pub override_gps_longitude: Option<f64>,
+
+    /// Test video stream URL for video player testing
+    #[serde(default = "default_test_video_url")]
+    pub test_video_url: String,
 }
 
 // Default value functions for serde
+fn default_config_version() -> u32 {
+    2  // Current schema version
+}
+
 fn default_servers() -> Vec<ServerConfig> {
     vec![ServerConfig::default_local()]
 }
@@ -144,9 +156,14 @@ fn default_aircraft_list_width() -> f32 {
     350.0
 }
 
+fn default_test_video_url() -> String {
+    "rtsp://localhost:8554/mystream".to_string()
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            config_version: default_config_version(),
             servers: default_servers(),
             show_airports: true,
             show_runways: true,
@@ -158,6 +175,7 @@ impl Default for AppConfig {
             aircraft_list_width: 350.0,
             override_gps_latitude: None,
             override_gps_longitude: None,
+            test_video_url: default_test_video_url(),
         }
     }
 }
@@ -168,16 +186,16 @@ impl AppConfig {
         // Try to load as new format first
         let config: AppConfig = confy::load("airjedi-desktop", "config")?;
 
-        // Check if we need to migrate from legacy format
-        // If servers list is empty, try to load legacy config
-        if config.servers.is_empty() {
+        // Check if we need to migrate from legacy format based on version
+        // Version 0 or 1 indicates legacy format
+        if config.config_version < 2 {
             if let Ok(legacy_config) = Self::try_load_legacy() {
-                println!("Migrating from legacy single-server configuration...");
+                println!("Migrating from legacy single-server configuration (version {})...", config.config_version);
                 let migrated = Self::migrate_from_legacy(legacy_config);
 
                 // Save migrated config immediately
                 migrated.save()?;
-                println!("Configuration migrated successfully");
+                println!("Configuration migrated successfully to version 2");
 
                 return Ok(migrated);
             }
@@ -205,6 +223,7 @@ impl AppConfig {
         };
 
         Self {
+            config_version: default_config_version(),  // Set to latest version
             servers,
             show_airports: legacy.show_airports.unwrap_or(true),
             show_runways: legacy.show_runways.unwrap_or(true),
@@ -216,6 +235,7 @@ impl AppConfig {
             aircraft_list_width: legacy.aircraft_list_width.unwrap_or(350.0),
             override_gps_latitude: None,
             override_gps_longitude: None,
+            test_video_url: default_test_video_url(),
         }
     }
 
