@@ -2312,9 +2312,28 @@ impl AirjediApp {
         let (hover_result, click_result) = map_response.inner;
         self.hovered_map_item = hover_result;
 
-        // Handle aircraft selection from map click
+        // Handle aircraft selection from map click; clear selection if map was clicked but no aircraft
         if let Some(clicked_icao) = click_result {
             self.selected_aircraft = Some(clicked_icao);
+        } else {
+            // Detect a primary click inside the map area that didn't hit an aircraft
+            let map_clicked_without_aircraft = ui.ctx().input(|i| {
+                if i.pointer.primary_clicked() {
+                    if let Some(pos) = i.pointer.interact_pos() {
+                        map_response.response.rect.contains(pos)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            });
+
+            if map_clicked_without_aircraft {
+                // Clear current selection when clicking empty map space
+                self.selected_aircraft = None;
+                self.following_aircraft = false;
+            }
         }
 
         // Render hover popup if hovering over a map item
