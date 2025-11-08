@@ -27,10 +27,12 @@ mod carto_tiles;
 mod config;
 mod connection_manager;
 mod photo_cache;
+mod sdr;
 mod status;
 mod status_pane;
 mod tcp_client;
 mod tiles;
+mod ui;
 mod video_protocol;
 mod video_player;
 mod video_manager;
@@ -676,6 +678,8 @@ struct AirjediApp {
     scroll_zoom_velocity: f32,
     // Video stream management
     video_manager: video_manager::VideoManager,
+    // Waterfall/SDR visualization
+    waterfall_window: Option<ui::WaterfallWindow>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1130,6 +1134,7 @@ impl AirjediApp {
             aircraft_list_rect: None,
             scroll_zoom_velocity: 0.0,
             video_manager: video_manager::VideoManager::new(),
+            waterfall_window: None,
         }
     }
 
@@ -2842,6 +2847,12 @@ impl eframe::App for AirjediApp {
                     if ui.button("Filters...").clicked() {
                         self.show_filters_window = true;
                     }
+                    if ui.button("Waterfall...").clicked() {
+                        // Create new waterfall window if not already open
+                        if self.waterfall_window.is_none() {
+                            self.waterfall_window = Some(ui::WaterfallWindow::new("waterfall_1"));
+                        }
+                    }
                     ui.separator();
                     // Aircraft List with checkmark and keyboard shortcut
                     let aircraft_list_text = if self.aircraft_list_expanded {
@@ -3712,6 +3723,15 @@ impl eframe::App for AirjediApp {
 
         // Render video player windows
         self.video_manager.render(ctx);
+
+        // Render waterfall window
+        if let Some(waterfall_window) = &mut self.waterfall_window {
+            waterfall_window.render(ctx);
+            // Clean up if window was closed
+            if !waterfall_window.is_open() {
+                self.waterfall_window = None;
+            }
+        }
 
         // Update frame time performance metrics
         let frame_duration = frame_start.elapsed().as_secs_f64() * 1000.0;

@@ -61,6 +61,18 @@ mimalloc = "0.1"
 gstreamer = "0.23"
 gstreamer-video = "0.23"
 gstreamer-app = "0.23"
+futuresdr = "0.0.29"
+egui_plot = "0.33"
+ringbuf = "0.3"
+rfd = "0.15"
+rtlsdr = { version = "0.1", optional = true }
+rustfft = "6.1"
+num-complex = "0.4"
+hound = "3.5"
+
+[features]
+default = []
+hardware = ["rtlsdr"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
