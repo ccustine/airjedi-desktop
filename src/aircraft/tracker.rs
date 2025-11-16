@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Mutex};
 use chrono::{DateTime, Utc};
 use crate::status::SystemStatus;
-use crate::video_protocol::VideoLink;
+use crate::video::protocol::VideoLink;
 
 // Constants for position validation and tracking
 const NAUTICAL_MILE_CONVERSION: f64 = 1.15078; // 1 nautical mile = 1.15078 statute miles

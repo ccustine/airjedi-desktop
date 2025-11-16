@@ -18,39 +18,27 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-mod aviation_data;
-mod aircraft_db;
-mod aircraft_metadata;
-mod aircraft_types;
-mod basestation;
-mod carto_tiles;
+mod aircraft;
+mod aviation;
 mod config;
-mod connection_manager;
-mod photo_cache;
+mod map;
+mod media;
+mod network;
 mod sdr;
 mod status;
-mod status_pane;
-mod tcp_client;
-mod tiles;
 mod ui;
-mod video_protocol;
-mod video_player;
-mod video_manager;
+mod video;
 
-use aircraft_db::AircraftDatabase;
-use aircraft_types::AircraftTypeDatabase;
-use aircraft_metadata::MetadataService;
-use aviation_data::{AviationData, Airport, Navaid};
-use basestation::Aircraft;
-use carto_tiles::CartoTileSource;
+use aircraft::{AircraftDatabase, AircraftTypeDatabase, MetadataService, Aircraft};
+use aviation::{AviationData, Airport, Navaid, AirportFilter};
 use clap::Parser;
 use eframe::egui;
-use photo_cache::PhotoTextureManager;
-use status::{SystemStatus, DiagnosticLevel};
-use status_pane::StatusPane;
+use media::PhotoTextureManager;
+use status::{SystemStatus, DiagnosticLevel, ServerStatus};
+use ui::StatusPane;
 use std::sync::{Arc, Mutex};
 use serde::Deserialize;
-use tiles::WebMercator;
+use map::{WebMercator, CartoTileSource};
 use config::DEFAULT_SERVER_ADDRESS;
 use walkers::{HttpTiles, MapMemory, HttpOptions, lat_lon};
 
@@ -202,7 +190,7 @@ fn main() -> Result<(), eframe::Error> {
     env_logger::init();
 
     // Initialize GStreamer for video playback
-    if let Err(e) = video_player::init_gstreamer() {
+    if let Err(e) = video::player::init_gstreamer() {
         eprintln!("Warning: Failed to initialize GStreamer: {}. Video playback will be unavailable.", e);
     } else {
         println!("GStreamer initialized successfully");
@@ -602,7 +590,7 @@ enum StartupState {
 }
 
 struct AirjediApp {
-    connection_manager: Arc<Mutex<connection_manager::ConnectionManager>>,
+    connection_manager: Arc<Mutex<network::ConnectionManager>>,
     map_center_lat: f64,
     map_center_lon: f64,
     receiver_lat: f64,
@@ -626,7 +614,7 @@ struct AirjediApp {
     time_limited_trails: bool,
     airport_filter: AirportFilter,
     // Cached aviation data to avoid cloning thousands of objects every frame
-    cached_aviation_data: Option<(Vec<Airport>, Vec<(String, Vec<aviation_data::Runway>)>, Vec<Navaid>)>,
+    cached_aviation_data: Option<(Vec<Airport>, Vec<(String, Vec<aviation::Runway>)>, Vec<Navaid>)>,
     last_aviation_cache_bounds: Option<(f64, f64, f64, f64)>,
     last_aviation_cache_filter: AirportFilter,
     // Hover popup state
@@ -677,17 +665,12 @@ struct AirjediApp {
     // Smoothed scroll zoom velocity for jitter-free zooming
     scroll_zoom_velocity: f32,
     // Video stream management
-    video_manager: video_manager::VideoManager,
+    video_manager: video::VideoManager,
     // Waterfall/SDR visualization
     waterfall_window: Option<ui::WaterfallWindow>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum AirportFilter {
-    All,              // Show all airplane airports (large, medium, small)
-    FrequentlyUsed,   // Show airports with scheduled service or large/medium
-    MajorOnly,        // Show only large airports
-}
+// AirportFilter is now imported from aviation module
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SortCriterion {
@@ -1021,7 +1004,7 @@ impl AirjediApp {
 
         // Initialize ConnectionManager (connections will be started in startup sequence)
         let connection_manager = Arc::new(Mutex::new(
-            connection_manager::ConnectionManager::new(system_status.clone(), 37.7749, -122.4194)
+            network::ConnectionManager::new(system_status.clone(), 37.7749, -122.4194)
         ));
         let aviation_data = Arc::new(Mutex::new(AviationData::new()));
         let aviation_data_loading = Arc::new(Mutex::new(true));
@@ -1133,7 +1116,7 @@ impl AirjediApp {
             aircraft_list_width: config.aircraft_list_width,
             aircraft_list_rect: None,
             scroll_zoom_velocity: 0.0,
-            video_manager: video_manager::VideoManager::new(),
+            video_manager: video::VideoManager::new(),
             waterfall_window: None,
         }
     }
@@ -3180,7 +3163,7 @@ impl eframe::App for AirjediApp {
                 let mut config_changed = false;
 
                 // Get server statuses for display
-                let server_statuses: std::collections::HashMap<String, status::ServerStatus> = {
+                let server_statuses: std::collections::HashMap<String, ServerStatus> = {
                     let status = self.system_status.lock().unwrap();
                     status.servers.clone()
                 };
@@ -3550,7 +3533,7 @@ impl eframe::App for AirjediApp {
 
                 // Test stream button
                 if ui.button("📹 Open Test Video Stream").clicked() {
-                    use crate::video_protocol::VideoLink;
+                    use crate::video::protocol::VideoLink;
 
                     // Use configured test video URL
                     let test_link = VideoLink::new(&self.config.test_video_url)

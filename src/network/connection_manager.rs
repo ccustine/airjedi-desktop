@@ -31,10 +31,10 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::basestation::{Aircraft, AircraftTracker};
+use crate::aircraft::{Aircraft, AircraftTracker};
 use crate::config::ServerConfig;
 use crate::status::SharedSystemStatus;
-use crate::tcp_client;
+use super::tcp_client::connect_adsb_feed;
 
 /// Represents a single server connection with its own tracker and lifecycle management
 struct ServerConnection {
@@ -96,7 +96,7 @@ impl ServerConnection {
         // Spawn connection task
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(tcp_client::connect_adsb_feed(
+            rt.block_on(connect_adsb_feed(
                 server_id,
                 server_name,
                 address_rx,

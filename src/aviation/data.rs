@@ -28,7 +28,7 @@ use serde::Deserialize;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use crate::video_protocol::VideoLink;
+use crate::video::protocol::VideoLink;
 
 /// Airport data from OurAirports
 #[derive(Debug, Clone, Deserialize)]
@@ -195,6 +195,17 @@ pub struct Navaid {
 
     #[serde(rename = "longitude_deg")]
     pub longitude: f64,
+}
+
+/// Airport filtering modes for display
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AirportFilter {
+    /// Show all airplane airports (large, medium, small)
+    All,
+    /// Show airports with scheduled service or large/medium airports
+    FrequentlyUsed,
+    /// Show only large airports
+    MajorOnly,
 }
 
 impl Navaid {

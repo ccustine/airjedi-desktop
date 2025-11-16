@@ -24,7 +24,7 @@
 //! - Main thread reads frame for texture upload to GPU
 //! - Supports RTSP, HLS, HTTP, and YouTube streams
 
-use crate::video_protocol::{VideoLink, VideoProtocol};
+use super::protocol::{VideoLink, VideoProtocol};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app as gst_app;
 use std::sync::{Arc, Mutex};

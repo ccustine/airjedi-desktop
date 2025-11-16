@@ -25,8 +25,8 @@
 //! - Cleanup closed windows
 //! - Coordinate with egui for rendering
 
-use crate::video_player::VideoPlayerWindow;
-use crate::video_protocol::VideoLink;
+use super::player::VideoPlayerWindow;
+use super::protocol::VideoLink;
 use std::collections::HashMap;
 use uuid::Uuid;
 
