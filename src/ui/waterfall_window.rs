@@ -713,7 +713,9 @@ mod tests {
 
         // Test middle (should be greenish)
         let color_mid = db_to_color(-50.0, -100.0, 0.0);
-        let Color32 { r: _r, g, b: _b, a: _ } = color_mid;
+        let r = color_mid.r();
+        let g = color_mid.g();
+        let b = color_mid.b();
         assert!(g > 128); // Should have significant green component
     }
 }
