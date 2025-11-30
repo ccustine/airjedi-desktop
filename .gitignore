@@ -16,3 +16,6 @@ data/
 /assets/mediamtx.yml
 /assets/test.mp4
 reference/
+
+# Git worktrees
+.worktrees/
