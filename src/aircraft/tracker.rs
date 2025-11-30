@@ -33,7 +33,7 @@ use log::{info, warn};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Mutex};
 use chrono::{DateTime, Utc};
-use adsb_client::tracker::haversine_distance_nm;
+use adsb_client::tracker::{haversine_distance_nm, PositionPoint};
 use adsb_client::protocol::{BaseStationParser, Protocol, AircraftMessage};
 use crate::status::SystemStatus;
 use crate::video::protocol::VideoLink;
@@ -50,14 +50,6 @@ const TRAIL_HISTORY_SECONDS: i64 = 300; // Keep 5 minutes of position history
 fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     // Convert from nautical miles to statute miles
     haversine_distance_nm(lat1, lon1, lat2, lon2) * NAUTICAL_MILE_CONVERSION
-}
-
-#[derive(Debug, Clone)]
-pub struct PositionPoint {
-    pub lat: f64,
-    pub lon: f64,
-    pub altitude: Option<i32>,
-    pub timestamp: DateTime<Utc>,
 }
 
 /// Inner aircraft data protected by RwLock for thread-safe interior mutability
