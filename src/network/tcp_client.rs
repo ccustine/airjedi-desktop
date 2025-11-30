@@ -26,8 +26,21 @@ use tokio::time::{sleep, Duration};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use adsb_client::tcp::ConnectionState as LibConnectionState;
 use crate::aircraft::AircraftTracker;
 use crate::status::{SharedSystemStatus, ConnectionStatus};
+
+/// Convert library connection state to app's connection status.
+/// Prepared for future refactoring to use library's Connection type.
+#[allow(dead_code)]
+fn lib_state_to_status(state: &LibConnectionState) -> ConnectionStatus {
+    match state {
+        LibConnectionState::Connecting => ConnectionStatus::Connecting,
+        LibConnectionState::Connected => ConnectionStatus::Connected,
+        LibConnectionState::Disconnected => ConnectionStatus::Disconnected,
+        LibConnectionState::Error(_) => ConnectionStatus::Error,
+    }
+}
 
 pub async fn connect_adsb_feed(
     server_id: String,
