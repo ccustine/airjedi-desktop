@@ -34,6 +34,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock, Mutex};
 use chrono::{DateTime, Utc};
 use adsb_client::tracker::haversine_distance_nm;
+use adsb_client::protocol::{BaseStationParser, Protocol, AircraftMessage};
 use crate::status::SystemStatus;
 use crate::video::protocol::VideoLink;
 
@@ -439,23 +440,15 @@ impl AircraftTracker {
     }
 
     pub fn parse_basestation_message(&mut self, line: &str) {
-        let parts: Vec<&str> = line.split(',').collect();
+        let mut parser = BaseStationParser::new();
 
-        if parts.is_empty() {
-            return;
-        }
+        let msg = match parser.parse(line.as_bytes()) {
+            Ok(Some(msg)) => msg,
+            Ok(None) => return,  // Not a parseable message
+            Err(_) => return,     // Parse error, skip
+        };
 
-        let msg_type = parts[0];
-
-        // We need at least the ICAO field (index 4)
-        if parts.len() < 5 {
-            return;
-        }
-
-        let icao = parts[4].to_string();
-        if icao.is_empty() {
-            return;
-        }
+        let icao = msg.icao().to_string();
 
         let aircraft = self.aircraft.entry(icao.clone()).or_insert_with(|| {
             Aircraft::new(icao, self.server_id.clone(), self.server_name.clone())
@@ -466,130 +459,42 @@ impl AircraftTracker {
             data.last_seen = Utc::now();
         });
 
-        match msg_type {
-            "MSG" => {
-                if parts.len() < 11 {
-                    return;
+        match msg {
+            AircraftMessage::Identification { callsign, .. } => {
+                aircraft.with_data_mut(|data| {
+                    data.callsign = Some(callsign);
+                });
+            }
+            AircraftMessage::Position { latitude, longitude, altitude, .. } => {
+                if let Some(alt) = altitude {
+                    aircraft.with_data_mut(|data| {
+                        data.altitude = Some(alt);
+                    });
                 }
-
-                let transmission_type = parts[1];
-
-                match transmission_type {
-                    "1" => {
-                        // Aircraft identification (callsign)
-                        if parts.len() > 10 && !parts[10].is_empty() {
-                            aircraft.with_data_mut(|data| {
-                                data.callsign = Some(parts[10].trim().to_string());
-                            });
-                        }
+                let updated = aircraft.update_position(
+                    latitude, longitude,
+                    self.center_lat, self.center_lon,
+                    self.max_distance_miles
+                );
+                if updated {
+                    if let Some(ref status) = self.status {
+                        status.lock()
+                            .expect("System status lock poisoned - unrecoverable state")
+                            .record_position_update();
                     }
-                    "3" => {
-                        // Airborne position
-                        if parts.len() > 15 {
-                            if !parts[11].is_empty() {
-                                if let Ok(alt) = parts[11].parse::<i32>() {
-                                    aircraft.with_data_mut(|data| {
-                                        data.altitude = Some(alt);
-                                    });
-                                }
-                            }
-                            if !parts[14].is_empty() && !parts[15].is_empty() {
-                                if let (Ok(lat), Ok(lon)) = (parts[14].parse::<f64>(), parts[15].parse::<f64>()) {
-                                    let updated = aircraft.update_position(lat, lon, self.center_lat, self.center_lon, self.max_distance_miles);
-                                    // Record position update for sparkline tracking
-                                    if updated {
-                                        if let Some(ref status) = self.status {
-                                            status.lock()
-                                                .expect("System status lock poisoned - unrecoverable state")
-                                                .record_position_update();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    "4" => {
-                        // Airborne velocity
-                        if parts.len() > 13 {
-                            aircraft.with_data_mut(|data| {
-                                if !parts[12].is_empty() {
-                                    if let Ok(speed) = parts[12].parse::<f64>() {
-                                        data.velocity = Some(speed);
-                                    }
-                                }
-                                if !parts[13].is_empty() {
-                                    if let Ok(track) = parts[13].parse::<f64>() {
-                                        data.track = Some(track);
-                                    }
-                                }
-                                if parts.len() > 16 && !parts[16].is_empty() {
-                                    if let Ok(vr) = parts[16].parse::<i32>() {
-                                        data.vertical_rate = Some(vr);
-                                    }
-                                }
-                            });
-                        }
-                    }
-                    "5" => {
-                        // Surveillance altitude
-                        if parts.len() > 11 && !parts[11].is_empty() {
-                            if let Ok(alt) = parts[11].parse::<i32>() {
-                                aircraft.with_data_mut(|data| {
-                                    data.altitude = Some(alt);
-                                });
-                            }
-                        }
-                    }
-                    "6" => {
-                        // Surveillance position
-                        if parts.len() > 15 {
-                            if !parts[11].is_empty() {
-                                if let Ok(alt) = parts[11].parse::<i32>() {
-                                    aircraft.with_data_mut(|data| {
-                                        data.altitude = Some(alt);
-                                    });
-                                }
-                            }
-                            if !parts[14].is_empty() && !parts[15].is_empty() {
-                                if let (Ok(lat), Ok(lon)) = (parts[14].parse::<f64>(), parts[15].parse::<f64>()) {
-                                    let updated = aircraft.update_position(lat, lon, self.center_lat, self.center_lon, self.max_distance_miles);
-                                    // Record position update for sparkline tracking
-                                    if updated {
-                                        if let Some(ref status) = self.status {
-                                            status.lock()
-                                                .expect("System status lock poisoned - unrecoverable state")
-                                                .record_position_update();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    "7" => {
-                        // Air-to-air message
-                        if parts.len() > 11 && !parts[11].is_empty() {
-                            if let Ok(alt) = parts[11].parse::<i32>() {
-                                aircraft.with_data_mut(|data| {
-                                    data.altitude = Some(alt);
-                                });
-                            }
-                        }
-                    }
-                    "8" => {
-                        // All call reply
-                        if parts.len() > 11 && !parts[11].is_empty() {
-                            if let Ok(alt) = parts[11].parse::<i32>() {
-                                aircraft.with_data_mut(|data| {
-                                    data.altitude = Some(alt);
-                                });
-                            }
-                        }
-                    }
-                    _ => {}
                 }
             }
-            _ => {
-                // Ignore other message types for now
+            AircraftMessage::Velocity { speed, track, vertical_rate, .. } => {
+                aircraft.with_data_mut(|data| {
+                    data.velocity = Some(speed);
+                    data.track = Some(track);
+                    data.vertical_rate = vertical_rate;
+                });
+            }
+            AircraftMessage::Altitude { altitude, .. } => {
+                aircraft.with_data_mut(|data| {
+                    data.altitude = Some(altitude);
+                });
             }
         }
     }
