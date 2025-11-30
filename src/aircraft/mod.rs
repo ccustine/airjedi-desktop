@@ -10,7 +10,6 @@ pub mod metadata;
 pub mod types;
 
 pub use tracker::{Aircraft, AircraftTracker};
-pub use adsb_client::tracker::PositionPoint;
 pub use database::AircraftDatabase;
 pub use metadata::MetadataService;
 pub use types::AircraftTypeDatabase;
