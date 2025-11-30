@@ -46,6 +46,9 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Install system dependencies
+      run: brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly pkg-config
+
     - name: Cache cargo registry
       uses: actions/cache@v3
       with:
