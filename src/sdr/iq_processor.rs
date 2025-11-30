@@ -508,7 +508,7 @@ mod tests {
     fn test_config_default() {
         let config = ProcessorConfig::default();
         assert_eq!(config.fft_size, 1024);
-        assert_eq!(config.sample_rate, 2_000_000.0);
+        assert_eq!(config.sample_rate, 2_400_000.0);
     }
 
     #[test]

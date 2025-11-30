@@ -69,6 +69,7 @@ rtlsdr = { version = "0.1", optional = true }
 rustfft = "6.1"
 num-complex = "0.4"
 hound = "3.5"
+adsb-client = { path = "crates/adsb-client" }
 
 [features]
 default = []
