@@ -28,6 +28,7 @@ mod sdr;
 mod status;
 mod ui;
 mod video;
+mod weather;
 
 use aircraft::{AircraftDatabase, AircraftTypeDatabase, MetadataService, Aircraft};
 use aviation::{AviationData, Airport, Navaid, AirportFilter};
@@ -40,7 +41,8 @@ use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use map::{WebMercator, CartoTileSource};
 use config::DEFAULT_SERVER_ADDRESS;
-use walkers::{HttpTiles, MapMemory, HttpOptions, lat_lon};
+use walkers::{HttpTiles, MapMemory, HttpOptions, lat_lon, Tiles};
+use weather::{WeatherTiles, WeatherLayer};
 
 // Trail display constants
 const TRAIL_MAX_AGE_SECONDS: f32 = 300.0;  // 5 minutes total
@@ -668,6 +670,8 @@ struct AirjediApp {
     video_manager: video::VideoManager,
     // Waterfall/SDR visualization
     waterfall_window: Option<ui::WaterfallWindow>,
+    // Weather overlay tiles
+    weather_tiles: WeatherTiles,
 }
 
 // AirportFilter is now imported from aviation module
@@ -1118,6 +1122,14 @@ impl AirjediApp {
             scroll_zoom_velocity: 0.0,
             video_manager: video::VideoManager::new(),
             waterfall_window: None,
+            weather_tiles: {
+                let mut tiles = WeatherTiles::new();
+                let api_key = WeatherTiles::resolve_api_key(
+                    config.openweathermap_api_key.as_deref()
+                );
+                tiles.set_api_key(api_key, egui_ctx);
+                tiles
+            },
         }
     }
 
@@ -1874,6 +1886,15 @@ impl AirjediApp {
         // Extract airplane texture for use in closure (avoids borrow checker issues)
         let airplane_texture = self.airplane_texture.as_ref();
 
+        // Extract weather configuration for use in closure
+        let weather_opacity = self.config.weather_opacity;
+        let show_weather_precipitation = self.config.show_weather_precipitation;
+        let show_weather_clouds = self.config.show_weather_clouds;
+        let show_weather_wind = self.config.show_weather_wind;
+
+        // Temporarily take weather_tiles to use in closure (avoids borrow conflicts)
+        let mut weather_tiles = std::mem::take(&mut self.weather_tiles);
+
         // Variable to track hovered items inside the map closure
         let mut detected_hover: Option<HoveredMapItem> = None;
         // Variable to track clicked aircraft
@@ -1915,6 +1936,101 @@ impl AirjediApp {
                     6.0,
                     egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 255, 200)),
                 );
+            }
+
+            // Draw weather layers (after basemap, before aviation overlays)
+            if weather_tiles.has_api_key() {
+                let zoom = map_zoom_level.round() as u8;
+                let tint = egui::Color32::from_rgba_unmultiplied(
+                    255, 255, 255, (weather_opacity * 255.0) as u8
+                );
+
+                // Helper to draw a weather layer
+                let draw_weather_layer = |tiles: &mut HttpTiles| {
+                    // Calculate tile bounds from viewport corners
+                    let top_left_vec = egui::vec2(rect.left_top().x, rect.left_top().y);
+                    let bottom_right_vec = egui::vec2(rect.right_bottom().x, rect.right_bottom().y);
+                    let top_left = projector.unproject(top_left_vec);
+                    let bottom_right = projector.unproject(bottom_right_vec);
+
+                    let min_tile_x = WebMercator::lon_to_x(top_left.x(), zoom) as i32;
+                    let max_tile_x = WebMercator::lon_to_x(bottom_right.x(), zoom) as i32;
+                    let min_tile_y = WebMercator::lat_to_y(top_left.y(), zoom) as i32;
+                    let max_tile_y = WebMercator::lat_to_y(bottom_right.y(), zoom) as i32;
+
+                    // Draw each visible tile
+                    for tile_x in min_tile_x..=max_tile_x {
+                        for tile_y in min_tile_y..=max_tile_y {
+                            let tile_id = walkers::TileId {
+                                x: tile_x as u32,
+                                y: tile_y as u32,
+                                zoom,
+                            };
+
+                            // Try to get the tile texture
+                            if let Some(tile) = tiles.at(tile_id) {
+                                if let walkers::Texture::Raster(texture) = &tile.texture {
+                                    // Calculate screen position for this tile
+                                    let tile_nw_lon = WebMercator::tile_to_lon(tile_x as f64, zoom);
+                                    let tile_nw_lat = WebMercator::tile_to_lat(tile_y as f64, zoom);
+                                    let tile_se_lon = WebMercator::tile_to_lon((tile_x + 1) as f64, zoom);
+                                    let tile_se_lat = WebMercator::tile_to_lat((tile_y + 1) as f64, zoom);
+
+                                    let nw_screen = projector.project(lat_lon(tile_nw_lat, tile_nw_lon));
+                                    let se_screen = projector.project(lat_lon(tile_se_lat, tile_se_lon));
+
+                                    let tile_rect = egui::Rect::from_two_pos(
+                                        egui::pos2(nw_screen.x, nw_screen.y),
+                                        egui::pos2(se_screen.x, se_screen.y),
+                                    );
+
+                                    // Only draw if tile intersects viewport
+                                    if tile_rect.intersects(rect) {
+                                        painter.image(
+                                            texture.id(),
+                                            tile_rect,
+                                            egui::Rect::from_min_max(
+                                                egui::pos2(0.0, 0.0),
+                                                egui::pos2(1.0, 1.0),
+                                            ),
+                                            tint,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                };
+
+                // Precipitation layer (bottom weather layer)
+                if show_weather_precipitation {
+                    if let Some(tiles) = weather_tiles.get_or_create_layer(
+                        WeatherLayer::Precipitation,
+                        ui.ctx(),
+                    ) {
+                        draw_weather_layer(tiles);
+                    }
+                }
+
+                // Cloud layer
+                if show_weather_clouds {
+                    if let Some(tiles) = weather_tiles.get_or_create_layer(
+                        WeatherLayer::Clouds,
+                        ui.ctx(),
+                    ) {
+                        draw_weather_layer(tiles);
+                    }
+                }
+
+                // Wind layer (top weather layer)
+                if show_weather_wind {
+                    if let Some(tiles) = weather_tiles.get_or_create_layer(
+                        WeatherLayer::Wind,
+                        ui.ctx(),
+                    ) {
+                        draw_weather_layer(tiles);
+                    }
+                }
             }
 
             // Draw aviation overlays
@@ -2295,6 +2411,9 @@ impl AirjediApp {
 
             (detected_hover, clicked_aircraft_icao)
         });
+
+        // Restore weather_tiles after Map closure
+        self.weather_tiles = weather_tiles;
 
         // Update hover state and handle clicks from the map
         let (hover_result, click_result) = map_response.inner;
@@ -3021,6 +3140,17 @@ impl eframe::App for AirjediApp {
         let padding = 20.0;
         let total_spacing = (estimated_text_width + padding) * 0.765;  // 23.5% closer to the right
 
+        // Build attribution text (include weather if any layer is active)
+        let base_attribution = "© OpenStreetMap contributors © CARTO";
+        let attribution_text = if self.config.show_weather_precipitation
+            || self.config.show_weather_clouds
+            || self.config.show_weather_wind
+        {
+            format!("{} | Weather © OpenWeatherMap", base_attribution)
+        } else {
+            base_attribution.to_string()
+        };
+
         egui::Area::new("map_attribution".into())
             .fixed_pos(egui::pos2(
                 viewport.right() - animated_width - total_spacing,
@@ -3029,7 +3159,7 @@ impl eframe::App for AirjediApp {
             .order(egui::Order::Tooltip)  // Higher z-order to stay above panel
             .show(ctx, |ui| {
                 ui.label(
-                    egui::RichText::new("© OpenStreetMap contributors © CARTO")
+                    egui::RichText::new(&attribution_text)
                         .size(10.0)
                         .color(egui::Color32::from_rgba_unmultiplied(200, 200, 200, 180))  // Light gray, semi-transparent
                 );
@@ -3107,6 +3237,55 @@ impl eframe::App for AirjediApp {
                             settings_changed = true;
                             // Sync checkbox state to all trackers
                             self.connection_manager.lock().unwrap().set_time_limited_trails(self.time_limited_trails);
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    // Weather overlays section
+                    ui.label(egui::RichText::new("Weather Overlays")
+                        .color(egui::Color32::from_rgb(150, 200, 200))
+                        .size(10.0)
+                        .strong());
+
+                    let has_api_key = self.weather_tiles.has_api_key();
+
+                    if !has_api_key {
+                        ui.label(egui::RichText::new("Configure API key in Settings")
+                            .color(egui::Color32::from_rgb(255, 200, 100))
+                            .size(9.0));
+                    }
+
+                    ui.add_enabled_ui(has_api_key, |ui| {
+                        let mut weather_changed = false;
+
+                        ui.horizontal(|ui| {
+                            ui.label("Precipitation:");
+                            if ui.checkbox(&mut self.config.show_weather_precipitation, "").changed() {
+                                weather_changed = true;
+                            }
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Clouds:");
+                            if ui.checkbox(&mut self.config.show_weather_clouds, "").changed() {
+                                weather_changed = true;
+                            }
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Wind:");
+                            if ui.checkbox(&mut self.config.show_weather_wind, "").changed() {
+                                weather_changed = true;
+                            }
+                        });
+
+                        if weather_changed {
+                            if let Err(e) = self.config.save() {
+                                eprintln!("Failed to save config: {}", e);
+                            }
                         }
                     });
 
@@ -3574,6 +3753,133 @@ impl eframe::App for AirjediApp {
                 ui.label(egui::RichText::new("💡 Video streaming requires GStreamer to be installed")
                     .size(8.0)
                     .color(egui::Color32::from_rgb(120, 120, 120)));
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // Weather Layers section
+                ui.heading(egui::RichText::new("Weather Layers")
+                    .size(12.0)
+                    .strong());
+
+                ui.add_space(8.0);
+
+                // API Key status and input
+                let api_key_source = self.weather_tiles.api_key_source();
+                let has_api_key = self.weather_tiles.has_api_key();
+
+                if let Some(source) = api_key_source {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("✓")
+                            .color(egui::Color32::from_rgb(100, 255, 100)));
+                        ui.label(egui::RichText::new(format!("API key from {}", source))
+                            .color(egui::Color32::from_rgb(150, 200, 150))
+                            .size(9.0));
+                    });
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("⚠")
+                            .color(egui::Color32::from_rgb(255, 200, 100)));
+                        ui.label(egui::RichText::new("API key required")
+                            .color(egui::Color32::from_rgb(255, 200, 100))
+                            .size(9.0));
+                    });
+                }
+
+                ui.add_space(4.0);
+
+                // API Key input field
+                ui.horizontal(|ui| {
+                    ui.label("API Key:");
+                    let mut key_text = self.config.openweathermap_api_key
+                        .clone()
+                        .unwrap_or_default();
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut key_text)
+                            .password(true)
+                            .hint_text("Enter OpenWeatherMap API key")
+                            .desired_width(200.0)
+                    );
+
+                    if response.changed() {
+                        let new_key = if key_text.is_empty() { None } else { Some(key_text) };
+                        self.config.openweathermap_api_key = new_key.clone();
+
+                        // Update weather tiles with new key
+                        let resolved_key = WeatherTiles::resolve_api_key(
+                            self.config.openweathermap_api_key.as_deref()
+                        );
+                        self.weather_tiles.set_api_key(resolved_key, ctx);
+
+                        if let Err(e) = self.config.save() {
+                            eprintln!("Failed to save config: {}", e);
+                        }
+                    }
+
+                    // Help button linking to OpenWeatherMap signup
+                    if ui.button("?").on_hover_text("Get a free API key from OpenWeatherMap").clicked() {
+                        let _ = webbrowser::open("https://home.openweathermap.org/api_keys");
+                    }
+                });
+
+                ui.add_space(8.0);
+
+                // Opacity slider
+                ui.horizontal(|ui| {
+                    ui.label("Opacity:");
+                    if ui.add(
+                        egui::Slider::new(&mut self.config.weather_opacity, 0.1..=1.0)
+                            .show_value(true)
+                            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+                    ).changed() {
+                        if let Err(e) = self.config.save() {
+                            eprintln!("Failed to save config: {}", e);
+                        }
+                    }
+                });
+
+                ui.add_space(8.0);
+
+                // Layer toggles (disabled if no API key)
+                ui.add_enabled_ui(has_api_key, |ui| {
+                    let mut precipitation_changed = false;
+                    let mut clouds_changed = false;
+                    let mut wind_changed = false;
+
+                    ui.horizontal(|ui| {
+                        precipitation_changed = ui.checkbox(
+                            &mut self.config.show_weather_precipitation,
+                            "Precipitation (rain/snow radar)"
+                        ).changed();
+                    });
+
+                    ui.horizontal(|ui| {
+                        clouds_changed = ui.checkbox(
+                            &mut self.config.show_weather_clouds,
+                            "Cloud Coverage"
+                        ).changed();
+                    });
+
+                    ui.horizontal(|ui| {
+                        wind_changed = ui.checkbox(
+                            &mut self.config.show_weather_wind,
+                            "Wind Speed"
+                        ).changed();
+                    });
+
+                    if precipitation_changed || clouds_changed || wind_changed {
+                        if let Err(e) = self.config.save() {
+                            eprintln!("Failed to save config: {}", e);
+                        }
+                    }
+                });
+
+                if !has_api_key {
+                    ui.label(egui::RichText::new("Enter API key to enable weather layers")
+                        .size(8.0)
+                        .color(egui::Color32::from_rgb(150, 150, 150)));
+                }
             });
 
         // Filters window (only shown when opened from View menu)

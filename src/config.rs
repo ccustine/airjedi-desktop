@@ -129,6 +129,26 @@ pub struct AppConfig {
     /// Test video stream URL for video player testing
     #[serde(default = "default_test_video_url")]
     pub test_video_url: String,
+
+    /// Show precipitation radar overlay
+    #[serde(default)]
+    pub show_weather_precipitation: bool,
+
+    /// Show cloud coverage overlay
+    #[serde(default)]
+    pub show_weather_clouds: bool,
+
+    /// Show wind speed overlay
+    #[serde(default)]
+    pub show_weather_wind: bool,
+
+    /// Weather layer opacity (0.0 - 1.0)
+    #[serde(default = "default_weather_opacity")]
+    pub weather_opacity: f32,
+
+    /// OpenWeatherMap API key (optional, env var takes precedence)
+    #[serde(default)]
+    pub openweathermap_api_key: Option<String>,
 }
 
 // Default value functions for serde
@@ -160,6 +180,10 @@ fn default_test_video_url() -> String {
     "rtsp://localhost:8554/mystream".to_string()
 }
 
+fn default_weather_opacity() -> f32 {
+    0.6
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -176,6 +200,11 @@ impl Default for AppConfig {
             override_gps_latitude: None,
             override_gps_longitude: None,
             test_video_url: default_test_video_url(),
+            show_weather_precipitation: false,
+            show_weather_clouds: false,
+            show_weather_wind: false,
+            weather_opacity: default_weather_opacity(),
+            openweathermap_api_key: None,
         }
     }
 }
@@ -236,6 +265,11 @@ impl AppConfig {
             override_gps_latitude: None,
             override_gps_longitude: None,
             test_video_url: default_test_video_url(),
+            show_weather_precipitation: false,
+            show_weather_clouds: false,
+            show_weather_wind: false,
+            weather_opacity: default_weather_opacity(),
+            openweathermap_api_key: None,
         }
     }
 
