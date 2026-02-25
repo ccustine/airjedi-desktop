@@ -83,6 +83,16 @@ pub struct Aircraft {
     pub velocity: Option<f64>,
     /// Vertical rate in feet per minute.
     pub vertical_rate: Option<i32>,
+    /// Squawk code (transponder code).
+    pub squawk: Option<String>,
+    /// Whether the aircraft is on the ground.
+    pub is_on_ground: Option<bool>,
+    /// Alert flag (squawk change).
+    pub alert: Option<bool>,
+    /// Emergency flag.
+    pub emergency: Option<bool>,
+    /// SPI (Special Position Identification) flag.
+    pub spi: Option<bool>,
     /// Timestamp of last received message.
     pub last_seen: DateTime<Utc>,
     /// Position history for trail rendering.
@@ -102,6 +112,11 @@ impl Aircraft {
             track: None,
             velocity: None,
             vertical_rate: None,
+            squawk: None,
+            is_on_ground: None,
+            alert: None,
+            emergency: None,
+            spi: None,
             last_seen: Utc::now(),
             position_history: Vec::new(),
             consecutive_rejections: 0,
@@ -302,10 +317,22 @@ impl AircraftTracker {
                 latitude,
                 longitude,
                 altitude,
+                ground_speed,
+                track,
+                is_on_ground,
                 ..
             } => {
                 if let Some(alt) = altitude {
                     aircraft.altitude = Some(alt);
+                }
+                if let Some(gs) = ground_speed {
+                    aircraft.velocity = Some(gs);
+                }
+                if let Some(trk) = track {
+                    aircraft.track = Some(trk);
+                }
+                if let Some(on_ground) = is_on_ground {
+                    aircraft.is_on_ground = Some(on_ground);
                 }
                 let updated = aircraft.update_position(
                     latitude,
@@ -322,14 +349,43 @@ impl AircraftTracker {
                 speed,
                 track,
                 vertical_rate,
+                is_on_ground,
                 ..
             } => {
                 aircraft.velocity = Some(speed);
                 aircraft.track = Some(track);
                 aircraft.vertical_rate = vertical_rate;
+                if let Some(on_ground) = is_on_ground {
+                    aircraft.is_on_ground = Some(on_ground);
+                }
             }
-            AircraftMessage::Altitude { altitude, .. } => {
-                aircraft.altitude = Some(altitude);
+            AircraftMessage::Altitude {
+                altitude,
+                squawk,
+                alert,
+                emergency,
+                spi,
+                is_on_ground,
+                ..
+            } => {
+                if let Some(alt) = altitude {
+                    aircraft.altitude = Some(alt);
+                }
+                if let Some(sq) = squawk {
+                    aircraft.squawk = Some(sq);
+                }
+                if let Some(a) = alert {
+                    aircraft.alert = Some(a);
+                }
+                if let Some(e) = emergency {
+                    aircraft.emergency = Some(e);
+                }
+                if let Some(s) = spi {
+                    aircraft.spi = Some(s);
+                }
+                if let Some(on_ground) = is_on_ground {
+                    aircraft.is_on_ground = Some(on_ground);
+                }
             }
         }
     }
@@ -425,6 +481,9 @@ mod tests {
             latitude: 34.0,
             longitude: -118.5,
             altitude: Some(35000),
+            ground_speed: None,
+            track: None,
+            is_on_ground: None,
         });
 
         let aircraft = tracker.get_by_icao("A1B2C3").unwrap();
@@ -447,6 +506,9 @@ mod tests {
             latitude: 40.6413,
             longitude: -73.7781,
             altitude: Some(35000),
+            ground_speed: None,
+            track: None,
+            is_on_ground: None,
         });
 
         let aircraft = tracker.get_by_icao("A1B2C3").unwrap();

@@ -61,6 +61,12 @@ pub enum AircraftMessage {
         longitude: f64,
         /// Altitude in feet (optional, may not be present in all messages).
         altitude: Option<i32>,
+        /// Ground speed in knots (from MSG type 2 surface position).
+        ground_speed: Option<f64>,
+        /// Track angle in degrees (from MSG type 2 surface position).
+        track: Option<f64>,
+        /// Whether the aircraft is on the ground.
+        is_on_ground: Option<bool>,
     },
 
     /// Aircraft velocity message.
@@ -73,14 +79,26 @@ pub enum AircraftMessage {
         track: f64,
         /// Vertical rate in feet per minute (positive = climb, negative = descend).
         vertical_rate: Option<i32>,
+        /// Whether the aircraft is on the ground.
+        is_on_ground: Option<bool>,
     },
 
-    /// Altitude-only update (from surveillance messages).
+    /// Surveillance update (altitude, squawk, and status flags).
     Altitude {
         /// ICAO 24-bit address.
         icao: String,
-        /// Altitude in feet.
-        altitude: i32,
+        /// Altitude in feet (absent in some MSG types like MSG,8).
+        altitude: Option<i32>,
+        /// Squawk code (transponder code).
+        squawk: Option<String>,
+        /// Alert flag (squawk change).
+        alert: Option<bool>,
+        /// Emergency flag.
+        emergency: Option<bool>,
+        /// SPI (Special Position Identification) flag.
+        spi: Option<bool>,
+        /// Whether the aircraft is on the ground.
+        is_on_ground: Option<bool>,
     },
 }
 
