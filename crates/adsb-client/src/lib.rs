@@ -89,6 +89,9 @@
 //!     latitude: 34.0,
 //!     longitude: -118.5,
 //!     altitude: Some(35000),
+//!     ground_speed: None,
+//!     track: None,
+//!     is_on_ground: None,
 //! });
 //!
 //! println!("Tracking {} aircraft", tracker.len());
