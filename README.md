@@ -1,3 +1,5 @@
+> **⚠️ This repository is obsolete and no longer maintained. It has been replaced by [airjedi-bevy](https://github.com/ccustine/airjedi-bevy).**
+
 <div align="center">
 
 # ✈️ AirJedi Desktop
